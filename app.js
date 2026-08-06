@@ -5,20 +5,24 @@ import { WebBluetoothTransport, FakeTransport } from './obd/transport.js';
 import { reassembleIsoTp, decode0101, decode0105 } from './obd/decoder.js';
 import { buildSample, buildReplayJsonl } from './replay.js';
 
-const BUILD = 'v13';
+const BUILD = 'v14';
 const REC_INTERVAL_MS = 700; // pause entre deux interrogations pendant l'enregistrement
 
 // Séquences de commandes (envoyées d'un coup pour capturer vite avant endormissement).
 // Ordre important : ATZ réactive l'écho, donc ATE0 vient APRÈS. (voir analyse des trames réelles)
 const SEQUENCES = {
   init: ['ATZ', 'ATE0', 'ATL0', 'ATH1', 'ATSP0'],
-  // Snapshot batterie Ioniq 5 : init + en-tête BMS (7E4) + blocs 220101 / 220105.
-  snapshot: ['ATZ', 'ATE0', 'ATL0', 'ATH1', 'ATSP0', 'ATSH7E4', '220101', '220105'],
+  // Snapshot batterie Ioniq 5 : init + en-tête BMS (7E4) + tous les blocs 2101..2106
+  // (2101 = principal ; 2102/2103/2104 = tensions cellules ; 2105 = SOH/SOC ; 2106 = énergie cumulée…).
+  snapshot: ['ATZ', 'ATE0', 'ATL0', 'ATH1', 'ATSP0', 'ATSH7E4',
+    '220101', '220102', '220103', '220104', '220105', '220106'],
 };
 
 // --- Service worker (mise à jour automatique) ---
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js').catch(() => {});
+  // updateViaCache: 'none' -> le navigateur ne sert jamais sw.js depuis le cache HTTP
+  // lors de la vérification de mise à jour (important sur GitHub Pages, cache 10 min).
+  navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).catch(() => {});
   let reloaded = false;
   navigator.serviceWorker.addEventListener('controllerchange', () => {
     if (reloaded) return;
