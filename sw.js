@@ -3,7 +3,7 @@
 // hors-ligne => repli sur le cache). Et skipWaiting()/clients.claim() pour que la nouvelle
 // version prenne le contrôle immédiatement, sans intervention.
 // Incrémenter CACHE à chaque publication (garde le hors-ligne propre).
-const CACHE = 'autotelemetry-v15';
+const CACHE = 'autotelemetry-v16';
 
 const ASSETS = [
   './',

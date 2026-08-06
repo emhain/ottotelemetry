@@ -19,6 +19,13 @@ export function buildSample(timestampIso, d1, d5) {
     m['battery.cell_v_min'] = d1.cellVMin;
     m['battery.temp_min'] = d1.tempMinC;
     m['battery.temp_max'] = d1.tempMaxC;
+    if (d1.energyChargedKwh != null) {
+      // Compteurs cumulés à vie → l'énergie d'une session = delta début/fin (robuste aux trous).
+      m['battery.energy_charged_kwh'] = d1.energyChargedKwh;
+      m['battery.energy_discharged_kwh'] = d1.energyDischargedKwh;
+      m['charge.plugged_ac'] = d1.acPlugged ? 1 : 0;
+      m['charge.plugged_dc'] = d1.dcPlugged ? 1 : 0;
+    }
   }
   return { type: 'sample', timestamp: timestampIso, measurements: m, events: [] };
 }

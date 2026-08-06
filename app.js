@@ -2,10 +2,10 @@
 // Connecte l'OBDLink CX (ou un transport simulé), envoie des commandes ELM327 et affiche
 // les réponses brutes. Mise à jour automatique via le service worker (voir sw.js).
 import { WebBluetoothTransport, FakeTransport } from './obd/transport.js';
-import { reassembleIsoTp, decode0101, decode0105 } from './obd/decoder.js';
+import { reassembleIsoTp, decode0101, decode0105, decodeOdometer } from './obd/decoder.js';
 import { buildSample, buildReplayJsonl } from './replay.js';
 
-const BUILD = 'v15';
+const BUILD = 'v16';
 const REC_INTERVAL_MS = 700; // pause entre deux interrogations pendant l'enregistrement
 
 // Séquences de commandes (envoyées d'un coup pour capturer vite avant endormissement).
@@ -15,7 +15,8 @@ const SEQUENCES = {
   // Snapshot batterie Ioniq 5 : init + en-tête BMS (7E4) + tous les blocs 2101..2106
   // (2101 = principal ; 2102/2103/2104 = tensions cellules ; 2105 = SOH/SOC ; 2106 = énergie cumulée…).
   snapshot: ['ATZ', 'ATE0', 'ATL0', 'ATH1', 'ATSP6', 'ATSH7E4',
-    '220101', '220102', '220103', '220104', '220105', '220106'],
+    '220101', '220102', '220103', '220104', '220105', '220106',
+    'ATSH7C6', '22B002'], // odomètre (combiné d'instruments)
 };
 
 // --- Service worker (mise à jour automatique) ---
@@ -175,9 +176,9 @@ async function runSequence(name) {
   showDecode(results);
 }
 
-// Remplit le panneau « Décodage » à partir des objets décodés d1 (220101) / d5 (220105).
-function renderDecode(d1, d5) {
-  if (!d1 && !d5) return;
+// Remplit le panneau « Décodage » à partir des décodages d1 (220101) / d5 (220105) / odomètre.
+function renderDecode(d1, d5, odoKm) {
+  if (!d1 && !d5 && odoKm == null) return;
   const rows = [];
   if (d5) {
     rows.push(['SOC affiché', `${d5.socDisplayPct.toFixed(1)} %`]);
@@ -192,18 +193,25 @@ function renderDecode(d1, d5) {
       rows.push(['Cellules', `${d1.cellVMin.toFixed(2)}–${d1.cellVMax.toFixed(2)} V (Δ ${d1.cellDeltaMv} mV)`]);
     }
     rows.push(['Température batterie', `${d1.tempMinC}–${d1.tempMaxC} °C`]);
+    if (d1.energyChargedKwh != null) {
+      rows.push(['Énergie cumulée', `↓ ${d1.energyChargedKwh.toFixed(1)} kWh · ↑ ${d1.energyDischargedKwh.toFixed(1)} kWh`]);
+      const plug = d1.dcPlugged ? 'DC (rapide)' : d1.acPlugged ? 'AC' : 'débranchée';
+      rows.push(['Prise', plug]);
+    }
   }
+  if (odoKm != null) rows.push(['Odomètre', `${odoKm.toLocaleString('fr-FR')} km`]);
   decodeBody.innerHTML = rows
     .map(([k, v]) => `<div><span style="color:var(--muted)">${k}</span> : <b>${v}</b></div>`)
     .join('');
   decodeCard.hidden = false;
 }
 
-// Décode les réponses 220101/220105 d'une séquence et remplit le panneau.
+// Décode les réponses d'une séquence (220101/220105/odomètre) et remplit le panneau.
 function showDecode(results) {
   const d1 = results['220101'] ? decode0101(reassembleIsoTp(results['220101'])) : null;
   const d5 = results['220105'] ? decode0105(reassembleIsoTp(results['220105'])) : null;
-  renderDecode(d1, d5);
+  const odo = results['22B002'] ? decodeOdometer(reassembleIsoTp(results['22B002'])) : null;
+  renderDecode(d1, d5, odo);
 }
 
 // --- Enregistrement d'une session Replay ---

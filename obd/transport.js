@@ -142,12 +142,19 @@ export class FakeTransport {
       ATSP0: 'OK',
       ATSP6: 'OK',
       ATSH7E4: 'OK',
+      ATSH7C6: 'OK',
       ATDP: 'AUTO, ISO 15765-4 (CAN 11/500)',
       '0100': '7EC 41 00 80 00 00 00',
-      // Trames ISO-TP bien formées et réalistes (scénario charge : ~-30 A, 700 V, 25 °C).
+      // Trame 220101 complète (62 o) réaliste : SOC BMS 75 %, -30 A, 700 V, 25 °C,
+      // cellules 4.0 V, énergie cumulée 2000/1900 kWh, prise AC branchée (b12 bit5).
       '220101':
-        '7EC 10 18 62 01 01 00 00 00\n7EC 21 00 00 00 00 00 00 00\n' +
-        '7EC 22 FE D4 1B 58 19 19 19\n7EC 23 19 18 19 19 AA AA AA',
+        '7EC 10 3E 62 01 01 FF FB E7\n7EC 21 EF 96 00 00 00 00 20\n' +
+        '7EC 22 FE D4 1B 58 19 19 19\n7EC 23 19 18 19 19 00 31 C8\n' +
+        '7EC 24 20 C8 50 00 00 8E 00\n7EC 25 00 6E 20 00 00 68 00\n' +
+        '7EC 26 00 00 4E 20 00 00 4A\n7EC 27 38 00 4B 00 00 00 03\n' +
+        '7EC 28 0C 00 00 00 00 0B B8',
+      // Odomètre simulé : 71 400 km (Int24 = 01 16 E8).
+      '22B002': '7CE 10 0C 62 B0 02 00 00 00\n7CE 21 00 00 00 01 16 E8',
       // SOC affiché 75 %, SOH 98 %.
       '220105':
         '7EC 10 2E 62 01 05 00 00 00\n7EC 21 00 00 00 00 00 00 00\n' +
