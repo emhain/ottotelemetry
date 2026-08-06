@@ -1,0 +1,5 @@
+# Empêche la mise en cache du service worker et de la page → mises à jour immédiates.
+/sw.js
+  Cache-Control: no-cache
+/index.html
+  Cache-Control: no-cache
