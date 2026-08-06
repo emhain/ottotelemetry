@@ -11,9 +11,12 @@ export function buildSample(timestampIso, d1, d5) {
     m['battery.soh'] = d5.sohPct;
   }
   if (d1) {
+    m['battery.soc_bms'] = d1.socBmsPct;
     m['battery.voltage'] = d1.voltageV;
     m['battery.current'] = d1.currentA;
     m['battery.power'] = d1.powerKw;
+    m['battery.cell_v_max'] = d1.cellVMax;
+    m['battery.cell_v_min'] = d1.cellVMin;
     m['battery.temp_min'] = d1.tempMinC;
     m['battery.temp_max'] = d1.tempMaxC;
   }

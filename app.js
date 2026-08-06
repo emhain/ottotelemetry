@@ -5,7 +5,7 @@ import { WebBluetoothTransport, FakeTransport } from './obd/transport.js';
 import { reassembleIsoTp, decode0101, decode0105 } from './obd/decoder.js';
 import { buildSample, buildReplayJsonl } from './replay.js';
 
-const BUILD = 'v12';
+const BUILD = 'v13';
 const REC_INTERVAL_MS = 700; // pause entre deux interrogations pendant l'enregistrement
 
 // Séquences de commandes (envoyées d'un coup pour capturer vite avant endormissement).
@@ -180,9 +180,13 @@ function renderDecode(d1, d5) {
     rows.push(['SOH', `${d5.sohPct.toFixed(1)} %`]);
   }
   if (d1) {
+    if (d1.socBmsPct != null) rows.push(['SOC BMS', `${d1.socBmsPct.toFixed(1)} %`]);
     rows.push(['Tension pack', `${d1.voltageV.toFixed(1)} V`]);
     rows.push(['Courant', `${d1.currentA.toFixed(1)} A`]);
     rows.push(['Puissance', `${d1.powerKw.toFixed(2)} kW`]);
+    if (d1.cellVMax != null) {
+      rows.push(['Cellules', `${d1.cellVMin.toFixed(2)}–${d1.cellVMax.toFixed(2)} V (Δ ${d1.cellDeltaMv} mV)`]);
+    }
     rows.push(['Température batterie', `${d1.tempMinC}–${d1.tempMaxC} °C`]);
   }
   decodeBody.innerHTML = rows

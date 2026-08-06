@@ -33,16 +33,23 @@ const i16 = (h, l) => { const v = (h << 8) | l; return v > 0x7fff ? v - 0x10000 
 const u16 = (h, l) => (h << 8) | l;
 const i8 = (b) => (b > 0x7f ? b - 0x100 : b);
 
-// Réponse à 220101 : courant, tension, températures batterie.
+// Réponse à 220101 : SOC BMS, courant, tension, tensions cellules, températures batterie.
+// Offsets validés par recoupement sur trames réelles (ancres SOC/temp + cohérence 192 cellules).
 export function decode0101(b) {
-  if (!b || b.length < 24 || b[0] !== 0x62) return null;
+  if (!b || b.length < 29 || b[0] !== 0x62) return null;
   const currentA = i16(b[13], b[14]) / 10;
   const voltageV = u16(b[15], b[16]) / 10;
   const temps = b.slice(17, 24).map(i8);
+  const cellVMax = b[26] / 50;
+  const cellVMin = b[28] / 50;
   return {
+    socBmsPct: b[7] / 2,
     currentA,
     voltageV,
     powerKw: +((currentA * voltageV) / 1000).toFixed(2),
+    cellVMax,
+    cellVMin,
+    cellDeltaMv: Math.round((cellVMax - cellVMin) * 1000),
     tempsC: temps,
     tempMinC: Math.min(...temps),
     tempMaxC: Math.max(...temps),
