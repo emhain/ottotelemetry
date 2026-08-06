@@ -1,0 +1,33 @@
+// Format Replay (voir docs/09-replay-format.md).
+// Produit un fichier JSON Lines : 1 ligne d'en-tête + 1 ligne par échantillon.
+// Ce format est directement relisable par le module core (ReplayTelemetryProvider).
+
+// Construit un échantillon Replay à partir des décodages 220101 (d1) et 220105 (d5).
+// Les clés suivent le dictionnaire des signaux (docs/10-signals.md).
+export function buildSample(timestampIso, d1, d5) {
+  const m = {};
+  if (d5) {
+    m['battery.soc'] = d5.socDisplayPct;
+    m['battery.soh'] = d5.sohPct;
+  }
+  if (d1) {
+    m['battery.voltage'] = d1.voltageV;
+    m['battery.current'] = d1.currentA;
+    m['battery.power'] = d1.powerKw;
+    m['battery.temp_min'] = d1.tempMinC;
+    m['battery.temp_max'] = d1.tempMaxC;
+  }
+  return { type: 'sample', timestamp: timestampIso, measurements: m, events: [] };
+}
+
+// Sérialise l'en-tête + les échantillons en JSON Lines.
+export function buildReplayJsonl(meta, samples) {
+  const header = {
+    type: 'header',
+    schemaVersion: 1,
+    sessionId: meta.sessionId,
+    vehicleId: meta.vehicleId,
+    kind: meta.kind,
+  };
+  return [JSON.stringify(header), ...samples.map((s) => JSON.stringify(s))].join('\n');
+}

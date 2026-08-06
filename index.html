@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>AutoTelemetry — Console OBD</title>
+  <meta name="theme-color" content="#0b1220">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="./icon.svg">
+  <style>
+    :root { color-scheme: light dark; --bg:#0b1220; --fg:#e6edf6; --muted:#8aa0bd;
+      --card:#111c30; --border:#25344f; --accent:#4f8cff; --ok:#37d3a0; --err:#ff6b6b;
+      --in:#37d3a0; --out:#8ab4ff; }
+    @media (prefers-color-scheme: light) {
+      :root { --bg:#f4f7fb; --fg:#16202e; --muted:#5a6b82; --card:#ffffff; --border:#dbe3ee;
+        --in:#0a8f66; --out:#2b6bd8; }
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100dvh; background:var(--bg); color:var(--fg);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      padding: max(14px, env(safe-area-inset-top)) 14px calc(14px + env(safe-area-inset-bottom));
+      display:flex; flex-direction:column; gap:14px; max-width:640px; margin-inline:auto; }
+    header { display:flex; align-items:baseline; gap:10px; }
+    header .badge { font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); }
+    header h1 { font-size:18px; margin:0; font-weight:600; }
+    header .build { margin-left:auto; font-size:12px; color:var(--muted); }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:14px; }
+    .status { display:flex; align-items:center; gap:10px; font-size:14px; }
+    .dot { width:10px; height:10px; border-radius:50%; background:var(--muted); flex:none; }
+    .dot.on { background:var(--ok); } .dot.err { background:var(--err); } .dot.wait{ background:var(--accent); }
+    .status .name { color:var(--muted); margin-left:auto; font-size:13px; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; }
+    button { font:inherit; border:1px solid var(--border); background:var(--card); color:var(--fg);
+      border-radius:10px; padding:11px 14px; font-weight:600; cursor:pointer; min-height:44px; }
+    button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+    button.ghost { background:transparent; }
+    button:disabled { opacity:.45; cursor:not-allowed; }
+    .presets button { flex:1 1 auto; font-family:ui-monospace,Menlo,Consolas,monospace; font-weight:600; }
+    .send { display:flex; gap:8px; }
+    .send input { flex:1; min-width:0; font:inherit; font-family:ui-monospace,Menlo,Consolas,monospace;
+      background:var(--bg); color:var(--fg); border:1px solid var(--border); border-radius:10px; padding:11px 12px; min-height:44px; }
+    #log { flex:1; min-height:200px; overflow:auto; background:var(--bg); border:1px solid var(--border);
+      border-radius:12px; padding:10px 12px; font-family:ui-monospace,Menlo,Consolas,monospace;
+      font-size:13px; line-height:1.5; white-space:pre-wrap; word-break:break-word; }
+    .line { margin:2px 0; }
+    .line .t { color:var(--muted); }
+    .line.out .m { color:var(--out); } .line.in .m { color:var(--in); }
+    .line.err .m { color:var(--err); } .line.info .m { color:var(--muted); }
+    .foot { display:flex; justify-content:space-between; align-items:center; color:var(--muted); font-size:12px; }
+    [hidden] { display:none !important; }
+  </style>
+</head>
+<body>
+  <header>
+    <span class="badge">AutoTelemetry</span>
+    <h1>Console OBD</h1>
+    <span class="build" id="build">—</span>
+  </header>
+
+  <div class="card">
+    <div class="status">
+      <span class="dot" id="dot"></span>
+      <span id="status">Déconnecté</span>
+      <span class="name" id="devName"></span>
+    </div>
+    <div class="status" style="margin-top:8px">
+      <span class="dot" id="btDot"></span>
+      <span id="btStatus" style="font-size:13px;color:var(--muted)">Bluetooth : vérification…</span>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" id="btnConnect">Connecter (Bluetooth)</button>
+      <button class="ghost" id="btnSimulate">Mode simulation</button>
+      <button class="ghost" id="btnDisconnect" hidden>Déconnecter</button>
+    </div>
+    <p style="margin:10px 0 0;font-size:12px;color:var(--muted);line-height:1.5">
+      Avant de connecter : 📍 Localisation activée · 📶 Bluetooth activé · autres apps OBD fermées · voiture réveillée.
+    </p>
+  </div>
+
+  <div class="card" id="cmdCard" hidden>
+    <div class="row presets" style="margin-bottom:8px">
+      <button data-cmd="ATI">ATI</button>
+      <button data-cmd="ATZ">ATZ</button>
+      <button data-cmd="ATE0">ATE0</button>
+      <button data-cmd="0100">0100</button>
+    </div>
+    <div class="row presets" style="margin-bottom:10px">
+      <button data-seq="init">Init</button>
+      <button class="primary" data-seq="snapshot">Snapshot Ioniq 5</button>
+    </div>
+    <div class="send">
+      <input id="cmdInput" placeholder="commande (ex. ATI)" autocomplete="off" autocapitalize="characters" spellcheck="false">
+      <button class="primary" id="btnSend">Envoyer</button>
+    </div>
+  </div>
+
+  <div class="card" id="recCard" hidden>
+    <div class="row" style="align-items:center;gap:10px">
+      <button class="primary" id="btnRecord">● Enregistrer</button>
+      <span id="recStatus" style="color:var(--muted);font-size:14px"></span>
+    </div>
+    <div class="row" id="recExport" hidden style="margin-top:10px">
+      <button id="btnDownload">Télécharger .jsonl</button>
+      <button class="primary" id="btnShareFile">Partager le fichier</button>
+    </div>
+    <div style="margin-top:8px;font-size:11px;color:var(--muted)">Interroge la batterie en continu et produit un fichier Replay (.jsonl).</div>
+  </div>
+
+  <div class="card" id="decodeCard" hidden>
+    <div style="font-weight:600;margin-bottom:8px">Décodage batterie</div>
+    <div id="decodeBody" style="font-size:15px;line-height:1.8"></div>
+    <div style="margin-top:8px;font-size:11px;color:var(--muted)">Valeurs décodées des trames BMS. Tension/courant à confirmer par un test en roulant/charge.</div>
+  </div>
+
+  <div id="log" aria-live="polite"></div>
+
+  <div class="foot">
+    <span>Incrément 2 — PID Hyundai</span>
+    <span class="row" style="gap:6px">
+      <button class="ghost" id="btnShare" style="min-height:auto;padding:6px 10px">Partager</button>
+      <button class="ghost" id="btnCopy" style="min-height:auto;padding:6px 10px">Copier</button>
+      <button class="ghost" id="btnClear" style="min-height:auto;padding:6px 10px">Effacer</button>
+    </span>
+  </div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
