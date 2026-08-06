@@ -79,7 +79,7 @@ export class WebBluetoothTransport {
    * Timeout ADAPTATIF : large pour le 1er octet (détection de protocole / « SEARCHING… »),
    * puis basé sur l'inactivité — tant que des trames arrivent, on ne coupe pas la réponse.
    */
-  async sendCommand(cmd, { firstByteMs = 8000, inactivityMs = 3000 } = {}) {
+  async sendCommand(cmd, { firstByteMs = 8000, inactivityMs = 5000 } = {}) {
     if (!this.connected) throw new Error('non connecté');
     if (this._pending) throw new Error('une commande est déjà en cours');
     const payload = new TextEncoder().encode(cmd.trim() + '\r');
