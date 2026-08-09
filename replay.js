@@ -4,8 +4,9 @@
 
 // Construit un échantillon Replay à partir des décodages 220101 (d1) et 220105 (d5).
 // Les clés suivent le dictionnaire des signaux (docs/10-signals.md).
-export function buildSample(timestampIso, d1, d5) {
+export function buildSample(timestampIso, d1, d5, odometerKm) {
   const m = {};
+  if (odometerKm != null) m['vehicle.odometer'] = odometerKm;
   if (d5) {
     m['battery.soc'] = d5.socDisplayPct;
     m['battery.soh'] = d5.sohPct;

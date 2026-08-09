@@ -5,8 +5,9 @@ import { WebBluetoothTransport, FakeTransport } from './obd/transport.js';
 import { reassembleIsoTp, decode0101, decode0105, decodeOdometer } from './obd/decoder.js';
 import { buildSample, buildReplayJsonl } from './replay.js';
 
-const BUILD = 'v16';
+const BUILD = 'v17';
 const REC_INTERVAL_MS = 700; // pause entre deux interrogations pendant l'enregistrement
+const ODO_EVERY = 20; // interroge l'odomètre 1 cycle sur 20 (il change lentement)
 
 // Séquences de commandes (envoyées d'un coup pour capturer vite avant endormissement).
 // Ordre important : ATZ réactive l'écho, donc ATE0 vient APRÈS. (voir analyse des trames réelles)
@@ -55,6 +56,8 @@ let recording = false;
 let recSamples = [];
 let recMeta = null;
 let recStart = 0;
+let recTick = 0;
+let lastOdometerKm = null;
 let wakeLock = null;
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -226,6 +229,8 @@ async function toggleRecord() {
     return;
   }
   recSamples = [];
+  recTick = 0;
+  lastOdometerKm = null;
   recMeta = { sessionId: crypto.randomUUID(), vehicleId: 'ioniq5', kind: 'trip' };
   recStart = Date.now();
   recording = true;
@@ -239,13 +244,23 @@ async function toggleRecord() {
 async function recordLoop() {
   while (recording && transport?.connected) {
     try {
+      // Odomètre (autre calculateur) : périodique. On bascule l'en-tête puis on revient au BMS.
+      if (recTick % ODO_EVERY === 0) {
+        try {
+          await transport.sendCommand('ATSH7C6');
+          const km = decodeOdometer(reassembleIsoTp(await transport.sendCommand('22B002')));
+          if (km != null) lastOdometerKm = km;
+        } catch { /* odomètre optionnel */ }
+        await transport.sendCommand('ATSH7E4'); // retour au BMS (hors try : échec => arrêt propre)
+      }
       const r1 = await transport.sendCommand('220101');
       const r5 = await transport.sendCommand('220105');
       const d1 = decode0101(reassembleIsoTp(r1));
       const d5 = decode0105(reassembleIsoTp(r5));
-      recSamples.push(buildSample(new Date().toISOString(), d1, d5));
-      renderDecode(d1, d5);
+      recSamples.push(buildSample(new Date().toISOString(), d1, d5, lastOdometerKm));
+      renderDecode(d1, d5, lastOdometerKm);
       updateRecUI();
+      recTick++;
     } catch (err) {
       log('err', `Enregistrement interrompu : ${err?.message || err}`);
       recording = false;
