@@ -2,12 +2,12 @@
 // Connecte l'OBDLink CX (ou un transport simulé), envoie des commandes ELM327 et affiche
 // les réponses brutes. Mise à jour automatique via le service worker (voir sw.js).
 import { WebBluetoothTransport, FakeTransport } from './obd/transport.js';
-import { reassembleIsoTp, decode0101, decode0105, decodeOdometer } from './obd/decoder.js';
+import { reassembleIsoTp, decode0101, decode0105, decodeOdometer, decodeTpms } from './obd/decoder.js';
 import { buildSample, buildReplayJsonl } from './replay.js';
 
-const BUILD = 'v17';
+const BUILD = 'v18';
 const REC_INTERVAL_MS = 700; // pause entre deux interrogations pendant l'enregistrement
-const ODO_EVERY = 20; // interroge l'odomètre 1 cycle sur 20 (il change lentement)
+const ODO_EVERY = 20; // interroge odomètre + pneus 1 cycle sur 20 (changent lentement)
 
 // Séquences de commandes (envoyées d'un coup pour capturer vite avant endormissement).
 // Ordre important : ATZ réactive l'écho, donc ATE0 vient APRÈS. (voir analyse des trames réelles)
@@ -17,7 +17,10 @@ const SEQUENCES = {
   // (2101 = principal ; 2102/2103/2104 = tensions cellules ; 2105 = SOH/SOC ; 2106 = énergie cumulée…).
   snapshot: ['ATZ', 'ATE0', 'ATL0', 'ATH1', 'ATSP6', 'ATSH7E4',
     '220101', '220102', '220103', '220104', '220105', '220106',
-    'ATSH7C6', '22B002'], // odomètre (combiné d'instruments)
+    'ATSH7C6', '22B002',   // odomètre (combiné d'instruments)
+    'ATSH7A0', '22C00B',   // pression/température des 4 pneus (TPMS)
+    'ATSH7B3', '220100',   // température extérieure + vitesse (à décoder)
+    'ATSH7DF', '03'],      // codes défaut (DTC, mode 03 en diffusion)
 };
 
 // --- Service worker (mise à jour automatique) ---
@@ -58,6 +61,7 @@ let recMeta = null;
 let recStart = 0;
 let recTick = 0;
 let lastOdometerKm = null;
+let lastTpms = null;
 let wakeLock = null;
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -179,9 +183,9 @@ async function runSequence(name) {
   showDecode(results);
 }
 
-// Remplit le panneau « Décodage » à partir des décodages d1 (220101) / d5 (220105) / odomètre.
-function renderDecode(d1, d5, odoKm) {
-  if (!d1 && !d5 && odoKm == null) return;
+// Remplit le panneau « Décodage » à partir des décodages + extras (odomètre, pneus).
+function renderDecode(d1, d5, extra = {}) {
+  if (!d1 && !d5 && extra.odometerKm == null && !extra.tpms) return;
   const rows = [];
   if (d5) {
     rows.push(['SOC affiché', `${d5.socDisplayPct.toFixed(1)} %`]);
@@ -196,25 +200,29 @@ function renderDecode(d1, d5, odoKm) {
       rows.push(['Cellules', `${d1.cellVMin.toFixed(2)}–${d1.cellVMax.toFixed(2)} V (Δ ${d1.cellDeltaMv} mV)`]);
     }
     rows.push(['Température batterie', `${d1.tempMinC}–${d1.tempMaxC} °C`]);
+    if (d1.aux12vV != null) rows.push(['Batterie 12 V', `${d1.aux12vV.toFixed(1)} V`]);
     if (d1.energyChargedKwh != null) {
       rows.push(['Énergie cumulée', `↓ ${d1.energyChargedKwh.toFixed(1)} kWh · ↑ ${d1.energyDischargedKwh.toFixed(1)} kWh`]);
-      const plug = d1.dcPlugged ? 'DC (rapide)' : d1.acPlugged ? 'AC' : 'débranchée';
-      rows.push(['Prise', plug]);
     }
   }
-  if (odoKm != null) rows.push(['Odomètre', `${odoKm.toLocaleString('fr-FR')} km`]);
+  if (extra.tpms) {
+    const t = extra.tpms;
+    rows.push(['Pneus (bar)', `AV ${t.fl.bar}/${t.fr.bar} · AR ${t.bl.bar}/${t.br.bar}`]);
+  }
+  if (extra.odometerKm != null) rows.push(['Odomètre', `${extra.odometerKm.toLocaleString('fr-FR')} km`]);
   decodeBody.innerHTML = rows
     .map(([k, v]) => `<div><span style="color:var(--muted)">${k}</span> : <b>${v}</b></div>`)
     .join('');
   decodeCard.hidden = false;
 }
 
-// Décode les réponses d'une séquence (220101/220105/odomètre) et remplit le panneau.
+// Décode les réponses d'une séquence et remplit le panneau.
 function showDecode(results) {
   const d1 = results['220101'] ? decode0101(reassembleIsoTp(results['220101'])) : null;
   const d5 = results['220105'] ? decode0105(reassembleIsoTp(results['220105'])) : null;
   const odo = results['22B002'] ? decodeOdometer(reassembleIsoTp(results['22B002'])) : null;
-  renderDecode(d1, d5, odo);
+  const tpms = results['22C00B'] ? decodeTpms(reassembleIsoTp(results['22C00B'])) : null;
+  renderDecode(d1, d5, { odometerKm: odo, tpms });
 }
 
 // --- Enregistrement d'une session Replay ---
@@ -231,6 +239,7 @@ async function toggleRecord() {
   recSamples = [];
   recTick = 0;
   lastOdometerKm = null;
+  lastTpms = null;
   recMeta = { sessionId: crypto.randomUUID(), vehicleId: 'ioniq5', kind: 'trip' };
   recStart = Date.now();
   recording = true;
@@ -244,21 +253,25 @@ async function toggleRecord() {
 async function recordLoop() {
   while (recording && transport?.connected) {
     try {
-      // Odomètre (autre calculateur) : périodique. On bascule l'en-tête puis on revient au BMS.
+      // Signaux lents (odomètre, pneus) : périodiques. On bascule l'en-tête puis retour au BMS.
       if (recTick % ODO_EVERY === 0) {
         try {
           await transport.sendCommand('ATSH7C6');
           const km = decodeOdometer(reassembleIsoTp(await transport.sendCommand('22B002')));
           if (km != null) lastOdometerKm = km;
-        } catch { /* odomètre optionnel */ }
+          await transport.sendCommand('ATSH7A0');
+          const tp = decodeTpms(reassembleIsoTp(await transport.sendCommand('22C00B')));
+          if (tp != null) lastTpms = tp;
+        } catch { /* signaux lents optionnels */ }
         await transport.sendCommand('ATSH7E4'); // retour au BMS (hors try : échec => arrêt propre)
       }
       const r1 = await transport.sendCommand('220101');
       const r5 = await transport.sendCommand('220105');
       const d1 = decode0101(reassembleIsoTp(r1));
       const d5 = decode0105(reassembleIsoTp(r5));
-      recSamples.push(buildSample(new Date().toISOString(), d1, d5, lastOdometerKm));
-      renderDecode(d1, d5, lastOdometerKm);
+      const extra = { odometerKm: lastOdometerKm, tpms: lastTpms };
+      recSamples.push(buildSample(new Date().toISOString(), d1, d5, extra));
+      renderDecode(d1, d5, extra);
       updateRecUI();
       recTick++;
     } catch (err) {

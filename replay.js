@@ -4,9 +4,14 @@
 
 // Construit un échantillon Replay à partir des décodages 220101 (d1) et 220105 (d5).
 // Les clés suivent le dictionnaire des signaux (docs/10-signals.md).
-export function buildSample(timestampIso, d1, d5, odometerKm) {
+export function buildSample(timestampIso, d1, d5, extra = {}) {
   const m = {};
-  if (odometerKm != null) m['vehicle.odometer'] = odometerKm;
+  if (extra.odometerKm != null) m['vehicle.odometer'] = extra.odometerKm;
+  if (extra.tpms) {
+    const t = extra.tpms;
+    m['tire.fl_bar'] = t.fl.bar; m['tire.fr_bar'] = t.fr.bar;
+    m['tire.bl_bar'] = t.bl.bar; m['tire.br_bar'] = t.br.bar;
+  }
   if (d5) {
     m['battery.soc'] = d5.socDisplayPct;
     m['battery.soh'] = d5.sohPct;
@@ -16,6 +21,7 @@ export function buildSample(timestampIso, d1, d5, odometerKm) {
     m['battery.voltage'] = d1.voltageV;
     m['battery.current'] = d1.currentA;
     m['battery.power'] = d1.powerKw;
+    if (d1.aux12vV != null) m['aux.voltage_12v'] = d1.aux12vV;
     m['battery.cell_v_max'] = d1.cellVMax;
     m['battery.cell_v_min'] = d1.cellVMin;
     m['battery.temp_min'] = d1.tempMinC;

@@ -55,6 +55,7 @@ export function decode0101(b) {
     tempMinC: Math.min(...temps),
     tempMaxC: Math.max(...temps),
   };
+  if (b.length > 32) out.aux12vV = +(b[32] * 0.1).toFixed(1); // batterie 12 V (réf Torque ad*0.1)
   // Champs présents dans la trame complète (62 octets) :
   if (b.length >= 49) {
     out.energyChargedKwh = u32(b[41], b[42], b[43], b[44]) / 10; // compteur à vie
@@ -63,6 +64,14 @@ export function decode0101(b) {
     out.dcPlugged = !!((b[12] >> 6) & 1);
   }
   return out;
+}
+
+// Réponse à 22C00B (en-tête 7A0) : pression (psi ÷5 → bar) et température (octet −50) des 4 pneus.
+const PSI_TO_BAR = 0.0689476;
+export function decodeTpms(b) {
+  if (!b || b.length < 23 || b[0] !== 0x62) return null;
+  const tire = (p, t) => ({ bar: +((b[p] / 5) * PSI_TO_BAR).toFixed(2), tempC: b[t] - 50 });
+  return { fl: tire(7, 8), fr: tire(12, 13), bl: tire(17, 18), br: tire(22, 23) };
 }
 
 // Réponse à 22B002 (en-tête 7C6, combiné d'instruments) : odomètre en km (Int24).

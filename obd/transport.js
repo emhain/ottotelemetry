@@ -143,7 +143,16 @@ export class FakeTransport {
       ATSP6: 'OK',
       ATSH7E4: 'OK',
       ATSH7C6: 'OK',
+      ATSH7A0: 'OK',
+      ATSH7B3: 'OK',
+      ATSH7DF: 'OK',
       ATDP: 'AUTO, ISO 15765-4 (CAN 11/500)',
+      // TPMS simulé : 4 pneus ~2,5 bar, 25 °C.
+      '22C00B':
+        '7A8 10 18 62 C0 0B FF FF FF\n7A8 21 FF B5 4B 00 00 00 B5\n' +
+        '7A8 22 4B 00 00 00 B5 4B 00\n7A8 23 00 00 B5 4B',
+      '220100': '7BB 10 0A 62 01 00 00 82 20\n7BB 21 00 00 00 00 AA AA',
+      '03': 'NO DATA', // aucun code défaut
       '0100': '7EC 41 00 80 00 00 00',
       // Trame 220101 complète (62 o) réaliste : SOC BMS 75 %, -30 A, 700 V, 25 °C,
       // cellules 4.0 V, énergie cumulée 2000/1900 kWh, prise AC branchée (b12 bit5).
