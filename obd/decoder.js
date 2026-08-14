@@ -80,6 +80,21 @@ export function decodeOdometer(b) {
   return (b[9] << 16) + (b[10] << 8) + b[11]; // km
 }
 
+// Réponse à 220100 (en-tête 7B3) : vitesse + températures ext./habitacle.
+// Formules issues du profil Torque Ioniq 5 (Esprit1st, GitHub), recoupées sur nos trames réelles :
+//   - vitesse   b[32] = km/h (direct) — validé 3 états : 29 à ~33 km/h, 0 en P et R.
+//   - temp ext. b[9]  = (G/2)−40 °C — cohérent (plus chaud à l'arrêt qu'en roulant : capteur ventilé).
+//   - temp hab. b[8]  = (F/2)−40 °C.
+// Convention Torque A=b[3] : F=b[8], G=b[9]. Le rapport (P/R/D) n'est PAS dans cette trame.
+export function decode0100(b) {
+  if (!b || b.length < 33 || b[0] !== 0x62) return null;
+  return {
+    speedKmh: b[32],
+    tempOutdoorC: b[9] / 2 - 40,
+    tempIndoorC: b[8] / 2 - 40,
+  };
+}
+
 // Réponse à 220105 : SOH, SOC affiché.
 export function decode0105(b) {
   if (!b || b.length < 35 || b[0] !== 0x62) return null;

@@ -7,6 +7,9 @@
 export function buildSample(timestampIso, d1, d5, extra = {}) {
   const m = {};
   if (extra.odometerKm != null) m['vehicle.odometer'] = extra.odometerKm;
+  if (extra.speedKmh != null) m['vehicle.speed'] = extra.speedKmh;
+  if (extra.tempOutdoorC != null) m['env.temp_outdoor'] = +extra.tempOutdoorC.toFixed(1);
+  if (extra.tempIndoorC != null) m['env.temp_indoor'] = +extra.tempIndoorC.toFixed(1);
   if (extra.tpms) {
     const t = extra.tpms;
     m['tire.fl_bar'] = t.fl.bar; m['tire.fr_bar'] = t.fr.bar;

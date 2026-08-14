@@ -2,10 +2,10 @@
 // Connecte l'OBDLink CX (ou un transport simulé), envoie des commandes ELM327 et affiche
 // les réponses brutes. Mise à jour automatique via le service worker (voir sw.js).
 import { WebBluetoothTransport, FakeTransport } from './obd/transport.js';
-import { reassembleIsoTp, decode0101, decode0105, decodeOdometer, decodeTpms } from './obd/decoder.js';
+import { reassembleIsoTp, decode0101, decode0105, decode0100, decodeOdometer, decodeTpms } from './obd/decoder.js';
 import { buildSample, buildReplayJsonl } from './replay.js';
 
-const BUILD = 'v18';
+const BUILD = 'v19';
 const REC_INTERVAL_MS = 700; // pause entre deux interrogations pendant l'enregistrement
 const ODO_EVERY = 20; // interroge odomètre + pneus 1 cycle sur 20 (changent lentement)
 
@@ -62,6 +62,7 @@ let recStart = 0;
 let recTick = 0;
 let lastOdometerKm = null;
 let lastTpms = null;
+let lastEnv = null; // décodage 220100 : { speedKmh, tempOutdoorC, tempIndoorC }
 let wakeLock = null;
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -185,8 +186,11 @@ async function runSequence(name) {
 
 // Remplit le panneau « Décodage » à partir des décodages + extras (odomètre, pneus).
 function renderDecode(d1, d5, extra = {}) {
-  if (!d1 && !d5 && extra.odometerKm == null && !extra.tpms) return;
+  if (!d1 && !d5 && extra.odometerKm == null && !extra.tpms && extra.speedKmh == null) return;
   const rows = [];
+  if (extra.speedKmh != null) rows.push(['Vitesse', `${extra.speedKmh} km/h`]);
+  if (extra.tempOutdoorC != null) rows.push(['Temp. extérieure', `${extra.tempOutdoorC.toFixed(1)} °C`]);
+  if (extra.tempIndoorC != null) rows.push(['Temp. habitacle', `${extra.tempIndoorC.toFixed(1)} °C`]);
   if (d5) {
     rows.push(['SOC affiché', `${d5.socDisplayPct.toFixed(1)} %`]);
     rows.push(['SOH', `${d5.sohPct.toFixed(1)} %`]);
@@ -222,7 +226,11 @@ function showDecode(results) {
   const d5 = results['220105'] ? decode0105(reassembleIsoTp(results['220105'])) : null;
   const odo = results['22B002'] ? decodeOdometer(reassembleIsoTp(results['22B002'])) : null;
   const tpms = results['22C00B'] ? decodeTpms(reassembleIsoTp(results['22C00B'])) : null;
-  renderDecode(d1, d5, { odometerKm: odo, tpms });
+  const env = results['220100'] ? decode0100(reassembleIsoTp(results['220100'])) : null;
+  renderDecode(d1, d5, {
+    odometerKm: odo, tpms,
+    speedKmh: env?.speedKmh, tempOutdoorC: env?.tempOutdoorC, tempIndoorC: env?.tempIndoorC,
+  });
 }
 
 // --- Enregistrement d'une session Replay ---
@@ -240,6 +248,7 @@ async function toggleRecord() {
   recTick = 0;
   lastOdometerKm = null;
   lastTpms = null;
+  lastEnv = null;
   recMeta = { sessionId: crypto.randomUUID(), vehicleId: 'ioniq5', kind: 'trip' };
   recStart = Date.now();
   recording = true;
@@ -262,6 +271,9 @@ async function recordLoop() {
           await transport.sendCommand('ATSH7A0');
           const tp = decodeTpms(reassembleIsoTp(await transport.sendCommand('22C00B')));
           if (tp != null) lastTpms = tp;
+          await transport.sendCommand('ATSH7B3');
+          const env = decode0100(reassembleIsoTp(await transport.sendCommand('220100')));
+          if (env != null) lastEnv = env;
         } catch { /* signaux lents optionnels */ }
         await transport.sendCommand('ATSH7E4'); // retour au BMS (hors try : échec => arrêt propre)
       }
@@ -269,7 +281,10 @@ async function recordLoop() {
       const r5 = await transport.sendCommand('220105');
       const d1 = decode0101(reassembleIsoTp(r1));
       const d5 = decode0105(reassembleIsoTp(r5));
-      const extra = { odometerKm: lastOdometerKm, tpms: lastTpms };
+      const extra = {
+        odometerKm: lastOdometerKm, tpms: lastTpms,
+        speedKmh: lastEnv?.speedKmh, tempOutdoorC: lastEnv?.tempOutdoorC, tempIndoorC: lastEnv?.tempIndoorC,
+      };
       recSamples.push(buildSample(new Date().toISOString(), d1, d5, extra));
       renderDecode(d1, d5, extra);
       updateRecUI();

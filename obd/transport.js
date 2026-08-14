@@ -151,7 +151,11 @@ export class FakeTransport {
       '22C00B':
         '7A8 10 18 62 C0 0B FF FF FF\n7A8 21 FF B5 4B 00 00 00 B5\n' +
         '7A8 22 4B 00 00 00 B5 4B 00\n7A8 23 00 00 B5 4B',
-      '220100': '7BB 10 0A 62 01 00 00 82 20\n7BB 21 00 00 00 00 AA AA',
+      // Trame 220100 réelle (roulage à ~33 km/h) : vitesse b[32] = 0x1D = 29 km/h.
+      '220100':
+        '7BB 10 27 62 01 00 7F 94 07\n7BB 21 C8 FF 86 90 5D 47 0F\n' +
+        '7BB 22 5A 28 10 FF FF C3 FF\n7BB 23 0E FF FF FF FF FF FF\n' +
+        '7BB 24 FF 1B 53 65 66 1D FF\n7BB 25 FF 01 FF FF FF AA AA',
       '03': 'NO DATA', // aucun code défaut
       '0100': '7EC 41 00 80 00 00 00',
       // Trame 220101 complète (62 o) réaliste : SOC BMS 75 %, -30 A, 700 V, 25 °C,
