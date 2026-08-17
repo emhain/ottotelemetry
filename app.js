@@ -2,10 +2,10 @@
 // Connecte l'OBDLink CX (ou un transport simulé), envoie des commandes ELM327 et affiche
 // les réponses brutes. Mise à jour automatique via le service worker (voir sw.js).
 import { WebBluetoothTransport, FakeTransport } from './obd/transport.js';
-import { reassembleIsoTp, decode0101, decode0105, decode0100, decodeOdometer, decodeTpms } from './obd/decoder.js';
+import { reassembleIsoTp, decode0101, decode0105, decode0100, decodeOdometer, decodeTpms, decodeDtc } from './obd/decoder.js';
 import { buildSample, buildReplayJsonl } from './replay.js';
 
-const BUILD = 'v19';
+const BUILD = 'v20';
 const REC_INTERVAL_MS = 700; // pause entre deux interrogations pendant l'enregistrement
 const ODO_EVERY = 20; // interroge odomètre + pneus 1 cycle sur 20 (changent lentement)
 
@@ -63,8 +63,37 @@ let recTick = 0;
 let lastOdometerKm = null;
 let lastTpms = null;
 let lastEnv = null; // décodage 220100 : { speedKmh, tempOutdoorC, tempIndoorC }
+let lastDtc = null; // { count, codes } (mode 03)
+let lastPos = null; // { lat, lon, accM } (GPS téléphone)
+let geoWatchId = null;
 let wakeLock = null;
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// --- GPS (téléphone) : tag domicile/public + cartographie des trajets ---
+function startGeo() {
+  if (!('geolocation' in navigator) || geoWatchId != null) return;
+  try {
+    geoWatchId = navigator.geolocation.watchPosition(
+      (p) => { lastPos = { lat: +p.coords.latitude.toFixed(6), lon: +p.coords.longitude.toFixed(6), accM: Math.round(p.coords.accuracy) }; },
+      () => { /* position indisponible : optionnel */ },
+      { enableHighAccuracy: true, maximumAge: 15000, timeout: 15000 },
+    );
+  } catch { /* géoloc non supportée */ }
+}
+function stopGeo() {
+  if (geoWatchId != null) { try { navigator.geolocation.clearWatch(geoWatchId); } catch {} geoWatchId = null; }
+}
+// Lecture ponctuelle (pour l'affichage d'un snapshot), best-effort avec court délai.
+function getPositionOnce() {
+  return new Promise((resolve) => {
+    if (!('geolocation' in navigator)) return resolve(null);
+    navigator.geolocation.getCurrentPosition(
+      (p) => resolve({ lat: +p.coords.latitude.toFixed(6), lon: +p.coords.longitude.toFixed(6), accM: Math.round(p.coords.accuracy) }),
+      () => resolve(null),
+      { enableHighAccuracy: true, maximumAge: 15000, timeout: 6000 },
+    );
+  });
+}
 
 // Garde l'écran allumé pendant l'enregistrement (sinon la veille couperait la capture).
 async function acquireWakeLock() {
@@ -119,6 +148,7 @@ async function connect(kind) {
     transport.onDisconnect?.(() => {
       recording = false;
       releaseWakeLock();
+      stopGeo();
       updateRecUI();
       if (recSamples.length) $('recExport').hidden = false;
       setStatus('err', 'Déconnecté');
@@ -208,11 +238,17 @@ function renderDecode(d1, d5, extra = {}) {
     if (d1.energyChargedKwh != null) {
       rows.push(['Énergie cumulée', `↓ ${d1.energyChargedKwh.toFixed(1)} kWh · ↑ ${d1.energyDischargedKwh.toFixed(1)} kWh`]);
     }
+    if (d1.chargedAh != null) {
+      rows.push(['Ah cumulés', `↓ ${d1.chargedAh.toFixed(1)} · ↑ ${d1.dischargedAh.toFixed(1)} Ah`]);
+    }
   }
   if (extra.tpms) {
     const t = extra.tpms;
     rows.push(['Pneus (bar)', `AV ${t.fl.bar}/${t.fr.bar} · AR ${t.bl.bar}/${t.br.bar}`]);
+    rows.push(['Pneus (°C)', `AV ${t.fl.tempC}/${t.fr.tempC} · AR ${t.bl.tempC}/${t.br.tempC}`]);
   }
+  if (extra.dtc) rows.push(['Défauts (DTC)', extra.dtc.count ? extra.dtc.codes.join(', ') : 'aucun']);
+  if (extra.pos) rows.push(['Position', `${extra.pos.lat}, ${extra.pos.lon} (±${extra.pos.accM} m)`]);
   if (extra.odometerKm != null) rows.push(['Odomètre', `${extra.odometerKm.toLocaleString('fr-FR')} km`]);
   decodeBody.innerHTML = rows
     .map(([k, v]) => `<div><span style="color:var(--muted)">${k}</span> : <b>${v}</b></div>`)
@@ -227,15 +263,19 @@ function showDecode(results) {
   const odo = results['22B002'] ? decodeOdometer(reassembleIsoTp(results['22B002'])) : null;
   const tpms = results['22C00B'] ? decodeTpms(reassembleIsoTp(results['22C00B'])) : null;
   const env = results['220100'] ? decode0100(reassembleIsoTp(results['220100'])) : null;
-  renderDecode(d1, d5, {
+  const dtc = results['03'] ? decodeDtc(results['03']) : null;
+  const base = {
     odometerKm: odo, tpms,
-    speedKmh: env?.speedKmh, tempOutdoorC: env?.tempOutdoorC, tempIndoorC: env?.tempIndoorC,
-  });
+    speedKmh: env?.speedKmh, tempOutdoorC: env?.tempOutdoorC, tempIndoorC: env?.tempIndoorC, dtc,
+  };
+  renderDecode(d1, d5, base);
+  // GPS best-effort : on complète l'affichage dès que la position arrive.
+  getPositionOnce().then((pos) => { if (pos) renderDecode(d1, d5, { ...base, pos }); });
 }
 
 // --- Enregistrement d'une session Replay ---
 async function toggleRecord() {
-  if (recording) { recording = false; releaseWakeLock(); updateRecUI(); return; }
+  if (recording) { recording = false; releaseWakeLock(); stopGeo(); updateRecUI(); return; }
   if (!transport?.connected) { log('err', 'Non connecté'); return; }
   log('info', "Initialisation de l'enregistrement…");
   try {
@@ -249,6 +289,9 @@ async function toggleRecord() {
   lastOdometerKm = null;
   lastTpms = null;
   lastEnv = null;
+  lastDtc = null;
+  lastPos = null;
+  startGeo();
   recMeta = { sessionId: crypto.randomUUID(), vehicleId: 'ioniq5', kind: 'trip' };
   recStart = Date.now();
   recording = true;
@@ -274,6 +317,8 @@ async function recordLoop() {
           await transport.sendCommand('ATSH7B3');
           const env = decode0100(reassembleIsoTp(await transport.sendCommand('220100')));
           if (env != null) lastEnv = env;
+          await transport.sendCommand('ATSH7DF');
+          lastDtc = decodeDtc(await transport.sendCommand('03')); // codes défaut (mode 03)
         } catch { /* signaux lents optionnels */ }
         await transport.sendCommand('ATSH7E4'); // retour au BMS (hors try : échec => arrêt propre)
       }
@@ -284,6 +329,7 @@ async function recordLoop() {
       const extra = {
         odometerKm: lastOdometerKm, tpms: lastTpms,
         speedKmh: lastEnv?.speedKmh, tempOutdoorC: lastEnv?.tempOutdoorC, tempIndoorC: lastEnv?.tempIndoorC,
+        dtc: lastDtc, pos: lastPos,
       };
       recSamples.push(buildSample(new Date().toISOString(), d1, d5, extra));
       renderDecode(d1, d5, extra);
@@ -297,6 +343,7 @@ async function recordLoop() {
     await delay(REC_INTERVAL_MS);
   }
   releaseWakeLock();
+  stopGeo();
   updateRecUI();
   if (recSamples.length) {
     $('recExport').hidden = false;

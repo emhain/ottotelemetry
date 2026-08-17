@@ -58,7 +58,10 @@ export function decode0101(b) {
   if (b.length > 32) out.aux12vV = +(b[32] * 0.1).toFixed(1); // batterie 12 V (réf Torque ad*0.1)
   // Champs présents dans la trame complète (62 octets) :
   if (b.length >= 49) {
-    out.energyChargedKwh = u32(b[41], b[42], b[43], b[44]) / 10; // compteur à vie
+    // Compteurs cumulés à vie. Ah = throughput (métrique de dégradation batterie).
+    out.chargedAh = u32(b[33], b[34], b[35], b[36]) / 10; // validé sur trames réelles
+    out.dischargedAh = u32(b[37], b[38], b[39], b[40]) / 10;
+    out.energyChargedKwh = u32(b[41], b[42], b[43], b[44]) / 10;
     out.energyDischargedKwh = u32(b[45], b[46], b[47], b[48]) / 10;
     out.acPlugged = !!((b[12] >> 5) & 1);
     out.dcPlugged = !!((b[12] >> 6) & 1);
@@ -93,6 +96,31 @@ export function decode0100(b) {
     tempOutdoorC: b[9] / 2 - 40,
     tempIndoorC: b[8] / 2 - 40,
   };
+}
+
+// Réponse au mode 03 (codes défaut) en diffusion (7DF) : plusieurs ECU répondent « 43 NN <codes> ».
+// NN = nombre de DTC pour cet ECU (0 = aucun). On somme et on formate les codes présents (P/C/B/U).
+// Note : au-delà d'une trame par ECU (beaucoup de codes), seul le 1er cadre est lu — suffisant ici.
+export function decodeDtc(text) {
+  let count = 0;
+  const codes = [];
+  for (const line of String(text).trim().split('\n')) {
+    const t = line.trim().split(/\s+/)
+      .filter((x) => /^[0-9A-Fa-f]{2}$/.test(x)).map((h) => parseInt(h, 16));
+    const i = t.indexOf(0x43);
+    if (i < 0) continue;
+    const nb = t[i + 1] ?? 0;
+    count += nb;
+    for (let k = 0; k < nb; k++) {
+      const hi = t[i + 2 + k * 2];
+      const lo = t[i + 3 + k * 2];
+      if (hi == null || lo == null) break;
+      const letter = ['P', 'C', 'B', 'U'][hi >> 6];
+      codes.push(letter + ((hi >> 4) & 0x3) + (hi & 0xf).toString(16).toUpperCase()
+        + (lo >> 4).toString(16).toUpperCase() + (lo & 0xf).toString(16).toUpperCase());
+    }
+  }
+  return { count, codes };
 }
 
 // Réponse à 220105 : SOH, SOC affiché.

@@ -14,7 +14,10 @@ export function buildSample(timestampIso, d1, d5, extra = {}) {
     const t = extra.tpms;
     m['tire.fl_bar'] = t.fl.bar; m['tire.fr_bar'] = t.fr.bar;
     m['tire.bl_bar'] = t.bl.bar; m['tire.br_bar'] = t.br.bar;
+    m['tire.fl_temp'] = t.fl.tempC; m['tire.fr_temp'] = t.fr.tempC;
+    m['tire.bl_temp'] = t.bl.tempC; m['tire.br_temp'] = t.br.tempC;
   }
+  if (extra.pos) { m['position.lat'] = extra.pos.lat; m['position.lon'] = extra.pos.lon; }
   if (d5) {
     m['battery.soc'] = d5.socDisplayPct;
     m['battery.soh'] = d5.sohPct;
@@ -27,17 +30,25 @@ export function buildSample(timestampIso, d1, d5, extra = {}) {
     if (d1.aux12vV != null) m['aux.voltage_12v'] = d1.aux12vV;
     m['battery.cell_v_max'] = d1.cellVMax;
     m['battery.cell_v_min'] = d1.cellVMin;
+    if (d1.cellDeltaMv != null) m['battery.cell_delta_mv'] = d1.cellDeltaMv;
     m['battery.temp_min'] = d1.tempMinC;
     m['battery.temp_max'] = d1.tempMaxC;
     if (d1.energyChargedKwh != null) {
       // Compteurs cumulés à vie → l'énergie d'une session = delta début/fin (robuste aux trous).
       m['battery.energy_charged_kwh'] = d1.energyChargedKwh;
       m['battery.energy_discharged_kwh'] = d1.energyDischargedKwh;
+      m['battery.charged_ah'] = d1.chargedAh; // throughput (dégradation batterie)
+      m['battery.discharged_ah'] = d1.dischargedAh;
       m['charge.plugged_ac'] = d1.acPlugged ? 1 : 0;
       m['charge.plugged_dc'] = d1.dcPlugged ? 1 : 0;
     }
   }
-  return { type: 'sample', timestamp: timestampIso, measurements: m, events: [] };
+  const events = [];
+  if (extra.dtc) {
+    m['dtc.count'] = extra.dtc.count;
+    if (extra.dtc.codes?.length) events.push(...extra.dtc.codes.map((c) => `DTC:${c}`));
+  }
+  return { type: 'sample', timestamp: timestampIso, measurements: m, events };
 }
 
 // Sérialise l'en-tête + les échantillons en JSON Lines.
