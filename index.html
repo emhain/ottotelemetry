@@ -110,7 +110,11 @@
   <div class="card" id="decodeCard" hidden>
     <div style="font-weight:600;margin-bottom:8px">Décodage batterie</div>
     <div id="decodeBody" style="font-size:15px;line-height:1.8"></div>
-    <div style="margin-top:8px;font-size:11px;color:var(--muted)">Valeurs décodées des trames BMS. Tension/courant à confirmer par un test en roulant/charge.</div>
+    <div class="row" id="snapExport" hidden style="margin-top:10px">
+      <button id="btnSnapDownload">Télécharger le snapshot</button>
+      <button class="primary" id="btnSnapShare">Partager le snapshot</button>
+    </div>
+    <div style="margin-top:8px;font-size:11px;color:var(--muted)">Snapshot exportable en fichier Replay (.jsonl) à déposer et ingérer côté serveur.</div>
   </div>
 
   <div id="log" aria-live="polite"></div>

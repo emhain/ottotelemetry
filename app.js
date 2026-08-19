@@ -5,7 +5,7 @@ import { WebBluetoothTransport, FakeTransport } from './obd/transport.js';
 import { reassembleIsoTp, decode0101, decode0105, decode0100, decodeOdometer, decodeTpms, decodeDtc } from './obd/decoder.js';
 import { buildSample, buildReplayJsonl } from './replay.js';
 
-const BUILD = 'v20';
+const BUILD = 'v21';
 const REC_INTERVAL_MS = 700; // pause entre deux interrogations pendant l'enregistrement
 const ODO_EVERY = 20; // interroge odomètre + pneus 1 cycle sur 20 (changent lentement)
 
@@ -53,6 +53,10 @@ const decodeBody = $('decodeBody');
 const recCard = $('recCard');
 
 let transport = null;
+
+// --- Snapshot exportable (dernier décodage → fichier Replay .jsonl) ---
+let snapSample = null;
+let snapMeta = null;
 
 // --- Enregistrement ---
 let recording = false;
@@ -269,8 +273,20 @@ function showDecode(results) {
     speedKmh: env?.speedKmh, tempOutdoorC: env?.tempOutdoorC, tempIndoorC: env?.tempIndoorC, dtc,
   };
   renderDecode(d1, d5, base);
-  // GPS best-effort : on complète l'affichage dès que la position arrive.
-  getPositionOnce().then((pos) => { if (pos) renderDecode(d1, d5, { ...base, pos }); });
+
+  // Snapshot exportable : dès qu'on a des données batterie, on prépare un fichier Replay (1 échantillon).
+  if (d1 || d5) {
+    const ts = new Date().toISOString();
+    snapMeta = { sessionId: crypto.randomUUID(), vehicleId: 'ioniq5', kind: 'snapshot' };
+    snapSample = buildSample(ts, d1, d5, base);
+    $('snapExport').hidden = false;
+    // GPS best-effort : complète l'affichage ET le snapshot dès que la position arrive.
+    getPositionOnce().then((pos) => {
+      if (!pos) return;
+      renderDecode(d1, d5, { ...base, pos });
+      snapSample = buildSample(ts, d1, d5, { ...base, pos });
+    });
+  }
 }
 
 // --- Enregistrement d'une session Replay ---
@@ -365,38 +381,51 @@ function updateRecUI() {
     : '';
 }
 
-function recFilename() {
+function tsStamp() {
   const d = new Date();
   const p = (n) => String(n).padStart(2, '0');
-  return `replay_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.jsonl`;
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
+const recFilename = () => `replay_${tsStamp()}.jsonl`;
+const snapFilename = () => `snapshot_${tsStamp()}.jsonl`;
 
-function downloadReplay() {
-  const blob = new Blob([buildReplayJsonl(recMeta, recSamples)], { type: 'application/x-ndjson' });
+// Télécharge un contenu .jsonl comme fichier.
+function downloadJsonl(name, text) {
+  const blob = new Blob([text], { type: 'application/x-ndjson' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = recFilename();
+  a.download = name;
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-  log('info', `Fichier ${recFilename()} généré (${recSamples.length} échantillons)`);
 }
-
-async function shareReplay() {
-  const text = buildReplayJsonl(recMeta, recSamples);
-  const file = new File([text], recFilename(), { type: 'application/x-ndjson' });
+// Partage un .jsonl via le sélecteur Android (WhatsApp, Drive…), repli sur téléchargement.
+async function shareJsonl(name, text) {
+  const file = new File([text], name, { type: 'application/x-ndjson' });
   try {
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file], title: file.name });
-    } else if (navigator.share) {
-      await navigator.share({ title: file.name, text });
-    } else {
-      downloadReplay();
-    }
+    if (navigator.canShare && navigator.canShare({ files: [file] })) await navigator.share({ files: [file], title: name });
+    else if (navigator.share) await navigator.share({ title: name, text });
+    else downloadJsonl(name, text);
   } catch { /* partage annulé */ }
 }
+
+function downloadReplay() {
+  const name = recFilename();
+  downloadJsonl(name, buildReplayJsonl(recMeta, recSamples));
+  log('info', `Fichier ${name} généré (${recSamples.length} échantillons)`);
+}
+const shareReplay = () => shareJsonl(recFilename(), buildReplayJsonl(recMeta, recSamples));
+
+// Snapshot → fichier Replay .jsonl (1 échantillon), à déposer/ingérer.
+function downloadSnapshot() {
+  if (!snapSample) return;
+  const name = snapFilename();
+  downloadJsonl(name, buildReplayJsonl(snapMeta, [snapSample]));
+  log('info', `Snapshot ${name} généré`);
+}
+const shareSnapshot = () => snapSample && shareJsonl(snapFilename(), buildReplayJsonl(snapMeta, [snapSample]));
 
 async function copyLog() {
   try {
@@ -454,6 +483,8 @@ $('btnClear').addEventListener('click', () => { logEl.innerHTML = ''; });
 $('btnRecord').addEventListener('click', toggleRecord);
 $('btnDownload').addEventListener('click', downloadReplay);
 $('btnShareFile').addEventListener('click', shareReplay);
+$('btnSnapDownload').addEventListener('click', downloadSnapshot);
+$('btnSnapShare').addEventListener('click', shareSnapshot);
 // Le Wake Lock est relâché quand l'onglet passe en arrière-plan : on le reprend au retour.
 document.addEventListener('visibilitychange', () => {
   if (recording && document.visibilityState === 'visible' && !wakeLock) acquireWakeLock();
