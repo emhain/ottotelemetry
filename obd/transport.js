@@ -129,9 +129,39 @@ export class FakeTransport {
     this._connected = true;
   }
 
+  /** Événements de simulation (écran Diagnostic) : 'plug' = câble de charge branché. */
+  simulate(event) {
+    if (event === 'plug') { this._plugged = true; this._plugAt = Date.now(); }
+    if (event === 'unplug') this._plugged = false;
+  }
+
+  // Scénario « charge AC refusée » : le calculateur 7E5 réagit au branchement (octets qui
+  // bougent puis retombent) et enregistre un code défaut. Valeurs FICTIVES, pour l'UI seulement.
+  _diagSim(hdr, c) {
+    if (c === '1902FF' || c === '19020D') {
+      if (hdr === '7E4') return '7EC 03 59 02 FF';
+      if (['7C6', '7A0', '7B3'].includes(hdr)) return `${(parseInt(hdr, 16) + 8).toString(16).toUpperCase()} 03 59 02 FF`;
+      if (hdr === '7D1') return '7D9 03 7F 19 11';
+      if (hdr === '7E5') return this._plugged ? '7ED 07 59 02 FF 1A B0 00 09' : '7ED 03 59 02 FF';
+      return 'NO DATA';
+    }
+    if (hdr === '7E5' && /^22/.test(c)) {
+      if (c === '220101') return '7ED 07 62 01 01 00 00 10 00';
+      if (c === '22B001') {
+        if (!this._plugged) return '7ED 07 62 B0 01 00 00 00 00';
+        return Date.now() - this._plugAt < 4000 ? '7ED 07 62 B0 01 35 E6 01 00' : '7ED 07 62 B0 01 35 00 04 00';
+      }
+      return '7ED 03 7F 22 31';
+    }
+    return null;
+  }
+
   async sendCommand(cmd) {
-    await delay(120);
     const c = cmd.trim().toUpperCase().replace(/\s+/g, '');
+    if (c.startsWith('ATSH')) { this._hdr = c.slice(4); await delay(20); return 'OK'; }
+    await delay(120);
+    const sim = this._diagSim(this._hdr, c);
+    if (sim != null) return sim;
     const table = {
       ATZ: 'ELM327 v1.4b',
       ATI: 'ELM327 v1.4b',

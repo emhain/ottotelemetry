@@ -48,6 +48,20 @@
     .line.out .m { color:var(--out); } .line.in .m { color:var(--in); }
     .line.err .m { color:var(--err); } .line.info .m { color:var(--muted); }
     .foot { display:flex; justify-content:space-between; align-items:center; color:var(--muted); font-size:12px; }
+    /* Diagnostic recharge */
+    .diag-step { border-top:1px solid var(--border); padding-top:10px; margin-top:10px; }
+    .diag-step p { margin:0 0 8px; font-size:13px; color:var(--muted); line-height:1.5; }
+    .diag-step .sum { font-size:13px; margin-top:6px; }
+    .sub { color:var(--muted); font-size:12px; }
+    #diagProgress { font-size:13px; color:var(--accent); min-height:1.2em; margin-top:8px; }
+    #diagVerdictList { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }
+    #diagVerdictList li { display:flex; gap:10px; align-items:flex-start; font-size:14px; line-height:1.4; }
+    #diagVerdictList li .dot { margin-top:5px; }
+    .v-ok .dot { background:var(--ok); } .v-alert .dot { background:var(--err); }
+    .v-warn .dot { background:#f2b33d; } .v-info .dot { background:var(--accent); }
+    .diag-table { width:100%; border-collapse:collapse; font-size:12px; font-family:ui-monospace,Menlo,Consolas,monospace; }
+    .diag-table td { border-top:1px solid var(--border); padding:4px 6px 4px 0; vertical-align:top; word-break:break-word; }
+    details summary { cursor:pointer; font-size:13px; font-weight:600; margin-top:10px; }
     [hidden] { display:none !important; }
   </style>
 </head>
@@ -105,6 +119,57 @@
       <button class="primary" id="btnShareFile">Partager le fichier</button>
     </div>
     <div style="margin-top:8px;font-size:11px;color:var(--muted)">Interroge la batterie en continu et produit un fichier Replay (.jsonl).</div>
+  </div>
+
+  <div class="card" id="diagCard" hidden>
+    <div style="display:flex;align-items:baseline;gap:8px">
+      <div style="font-weight:600">Diagnostic recharge AC</div>
+      <span class="sub">lecture seule · aucun code effacé</span>
+    </div>
+
+    <div class="diag-step">
+      <p><b>A · Référence</b> — voiture en <b>Ready</b>, câble <b>débranché</b>. Scanne les calculateurs, lit les codes défaut et sonde le calculateur de charge (1 à 2 min).</p>
+      <button class="primary" id="diagStepA">A · Lancer la référence</button>
+      <div class="sum" id="diagRefSummary"></div>
+    </div>
+
+    <div class="diag-step">
+      <p><b>B · Branchement</b> — coupez le Ready (comme pour une charge normale) en laissant une portière ouverte pour garder la voiture éveillée. Démarrez la surveillance, branchez la borne, touchez « Câble branché » au moment du branchement. Arrêtez 1 à 2 min après l'extinction des voyants.</p>
+      <button id="diagStepB" disabled>B · Surveiller le branchement</button>
+      <div class="row" id="diagMarkers" hidden style="margin-top:8px">
+        <button data-marker="Câble branché">🔌 Câble branché</button>
+        <button data-marker="Voyants éteints">Voyants éteints</button>
+        <button class="ghost" id="diagMarkerOther">+ Repère</button>
+      </div>
+      <div class="sum" id="diagLive"></div>
+    </div>
+
+    <div class="diag-step">
+      <p><b>C · Après l'échec</b> — relit tous les codes défaut pour voir ceux apparus pendant la tentative.</p>
+      <button id="diagStepC" disabled>C · Relire les codes défaut</button>
+      <div class="sum sub" id="diagAfterSummary"></div>
+    </div>
+
+    <div id="diagProgress" aria-live="polite"></div>
+
+    <div class="diag-step" id="diagVerdict" hidden>
+      <div style="font-weight:600;margin-bottom:8px">Verdict</div>
+      <ul id="diagVerdictList"></ul>
+      <details>
+        <summary>Calculateurs et codes défaut</summary>
+        <table class="diag-table"><tbody id="diagEcus"></tbody></table>
+      </details>
+      <details>
+        <summary>Octets qui ont varié (avant → après « Câble branché »)</summary>
+        <table class="diag-table"><tbody id="diagChanges"></tbody></table>
+      </details>
+    </div>
+
+    <div class="row" id="diagExport" hidden style="margin-top:10px">
+      <button id="diagDownload">Télécharger le rapport</button>
+      <button class="primary" id="diagShare">Partager le rapport</button>
+      <button class="ghost" id="diagCopy">Copier le résumé</button>
+    </div>
   </div>
 
   <div class="card" id="decodeCard" hidden>

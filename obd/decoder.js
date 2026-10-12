@@ -101,13 +101,14 @@ export function decode0100(b) {
 // Réponse au mode 03 (codes défaut) en diffusion (7DF) : plusieurs ECU répondent « 43 NN <codes> ».
 // NN = nombre de DTC pour cet ECU (0 = aucun). On somme et on formate les codes présents (P/C/B/U).
 // Note : au-delà d'une trame par ECU (beaucoup de codes), seul le 1er cadre est lu — suffisant ici.
-export function decodeDtc(text) {
+// `respByte` : 0x43 (mode 03, confirmés), 0x47 (mode 07, en attente), 0x4A (mode 0A, permanents).
+export function decodeDtc(text, respByte = 0x43) {
   let count = 0;
   const codes = [];
   for (const line of String(text).trim().split('\n')) {
     const t = line.trim().split(/\s+/)
       .filter((x) => /^[0-9A-Fa-f]{2}$/.test(x)).map((h) => parseInt(h, 16));
-    const i = t.indexOf(0x43);
+    const i = t.indexOf(respByte);
     if (i < 0) continue;
     const nb = t[i + 1] ?? 0;
     count += nb;

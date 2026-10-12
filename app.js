@@ -4,8 +4,9 @@
 import { WebBluetoothTransport, FakeTransport } from './obd/transport.js';
 import { reassembleIsoTp, decode0101, decode0105, decode0100, decodeOdometer, decodeTpms, decodeDtc } from './obd/decoder.js';
 import { buildSample, buildReplayJsonl } from './replay.js';
+import { initDiagUi } from './diag/ui.js';
 
-const BUILD = 'v21';
+const BUILD = 'v22';
 const REC_INTERVAL_MS = 700; // pause entre deux interrogations pendant l'enregistrement
 const ODO_EVERY = 20; // interroge odomètre + pneus 1 cycle sur 20 (changent lentement)
 
@@ -137,6 +138,8 @@ function setStatus(state, text) {
 function setConnectedUI(connected) {
   cmdCard.hidden = !connected;
   recCard.hidden = !connected;
+  $('diagCard').hidden = !connected;
+  diagUi.refresh();
   btnDisconnect.hidden = !connected;
   btnConnect.disabled = connected;
   btnSimulate.disabled = connected;
@@ -150,6 +153,7 @@ async function connect(kind) {
   log('info', kind === 'fake' ? 'Démarrage du mode simulation' : 'Ouverture du sélecteur Bluetooth…');
   try {
     transport.onDisconnect?.(() => {
+      diagUi.onDisconnect();
       recording = false;
       releaseWakeLock();
       stopGeo();
@@ -293,6 +297,7 @@ function showDecode(results) {
 async function toggleRecord() {
   if (recording) { recording = false; releaseWakeLock(); stopGeo(); updateRecUI(); return; }
   if (!transport?.connected) { log('err', 'Non connecté'); return; }
+  if (diagUi.busy) { log('err', "Diagnostic en cours : attendez la fin de l'étape"); return; }
   log('info', "Initialisation de l'enregistrement…");
   try {
     for (const c of [...SEQUENCES.init, 'ATSH7E4']) await transport.sendCommand(c);
@@ -374,6 +379,7 @@ function updateRecUI() {
   // Pendant l'enregistrement, on verrouille les commandes manuelles (conflit de canal).
   document.querySelectorAll('#cmdCard button, #cmdCard input, #btnDisconnect')
     .forEach((el) => { el.disabled = recording; });
+  diagUi.refresh();
   const secs = recStart ? Math.round((Date.now() - recStart) / 1000) : 0;
   const p = (n) => String(n).padStart(2, '0');
   $('recStatus').textContent = (recording || recSamples.length)
@@ -462,6 +468,24 @@ async function refreshBtStatus() {
   dotEl.className = 'dot ' + (available ? 'on' : 'err');
   txtEl.textContent = available ? 'Bluetooth : disponible' : 'Bluetooth : indisponible (active-le)';
 }
+
+// --- Diagnostic recharge AC (diag/ui.js) : partage la liaison, exclusif avec l'enregistrement ---
+const diagUi = initDiagUi({
+  getTransport: () => transport,
+  log,
+  isBlocked: () => recording,
+  setBusy: (busy) => {
+    // Pendant une étape de diagnostic : un seul détenteur du canal OBD.
+    document.querySelectorAll('#cmdCard button, #cmdCard input, #btnDisconnect, #btnRecord')
+      .forEach((el) => { el.disabled = busy; });
+    if (busy) {
+      // Le Wake Lock évite que l'écran s'éteigne pendant la surveillance du branchement.
+      acquireWakeLock();
+    } else if (!recording) {
+      releaseWakeLock();
+    }
+  },
+});
 
 // --- Événements ---
 btnConnect.addEventListener('click', () => connect('ble'));
