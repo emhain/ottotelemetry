@@ -12,7 +12,7 @@
 // LECTURE SEULE (ADR-005) : toutes les commandes passent par isReadOnlyCommand().
 
 import { reassembleIsoTp, decode0101, decode0105, decodeDtc } from '../obd/decoder.js';
-import { isReadOnlyCommand, parseUdsResponse, decodeUdsDtcs, dtcLabel, nrcText, toHex } from '../obd/uds.js';
+import { isReadOnlyCommand, parseUdsResponse, decodeUdsDtcs, dtcLabel, dtcFullCode, describeDtc, asciiDid, nrcText, toHex } from '../obd/uds.js';
 
 export const REPORT_VERSION = 1;
 
@@ -26,7 +26,7 @@ export const KNOWN_ECUS = {
   '7B3': { name: 'Climatisation', confirmed: true },
   '7E2': { name: 'Gestion véhicule (VCU)', charge: true },
   '7E3': { name: 'Onduleur moteur (MCU)' },
-  '7E5': { name: 'Charge (OBC / VCMS)', charge: true },
+  '7E5': { name: 'Charge – ICCU (OBC)', confirmed: true, charge: true }, // codes PFC/relais relevés le 12/10/2026
   '770': { name: 'Boîtier habitacle (IGPM)' },
   '7D1': { name: 'Freinage (ESC)' },
   '7D2': { name: 'Airbags' },
@@ -47,6 +47,14 @@ export const PROBE_DIDS = [
   ...[...Array(10)].map((_, i) => `22B0${(i + 1).toString(16).toUpperCase().padStart(2, '0')}`),
   ...[...Array(10)].map((_, i) => `22C0${(i + 1).toString(16).toUpperCase().padStart(2, '0')}`),
 ];
+
+// Identifiants UDS standard (ISO 14229) lus sur les calculateurs de charge : n° de pièce et
+// versions logicielle/matérielle. Permet de vérifier qu'un ICCU a été remplacé ou mis à jour.
+export const IDENT_DIDS = { '22F187': 'N° de pièce', '22F188': 'Logiciel (n°)', '22F189': 'Version logicielle', '22F191': 'Matériel (n°)' };
+
+// Surveillance : arrêt automatique 2 min après « Câble branché », et au plus tard après 10 min.
+export const MONITOR_AFTER_MARKER_MS = 120_000;
+export const MONITOR_MAX_MS = 600_000;
 
 const INIT = ['ATZ', 'ATE0', 'ATL0', 'ATH1', 'ATSP6'];
 const ecuName = (h) => KNOWN_ECUS[h]?.name ?? 'Calculateur inconnu';
@@ -76,6 +84,12 @@ export class ChargeDiagnostic {
       after: null,       // étape C
       raw: [],           // [{ t, cmd, resp }] toutes les requêtes/réponses
     };
+    this._header = null;
+  }
+
+  /** Rattache un nouveau transport (reconnexion après coupure Bluetooth) en gardant le rapport. */
+  attach(transport) {
+    this.t = transport;
     this._header = null;
   }
 
@@ -109,6 +123,8 @@ export class ChargeDiagnostic {
     }
     if (r.status === 'none') return { status: 'none', responder: null };
     if (r.status === 'negative') return { status: 'negative', nrc: r.nrc, nrcText: nrcText(r.nrc), responder: r.responder };
+    // Vu sur 7C6 : « 7CE 01 59 » (réponse tronquée) — ni code, ni absence de code certaine.
+    if (r.bytes[0] === 0x59 && r.bytes.length < 3) return { status: 'partial', nrcText: 'réponse incomplète', raw: toHex(r.bytes), responder: r.responder };
     const dtcs = decodeUdsDtcs(r.bytes);
     return dtcs ? { status: 'ok', dtcs, responder: r.responder } : { status: 'invalid', raw: toHex(r.bytes), responder: r.responder };
   }
@@ -170,6 +186,17 @@ export class ChargeDiagnostic {
     return byEcu;
   }
 
+  /** Lit les identifiants (n° de pièce, versions) d'un calculateur : { did: texte }. */
+  async readIdents(header) {
+    await this.setHeader(header);
+    const out = {};
+    for (const did of Object.keys(IDENT_DIDS)) {
+      const r = parseUdsResponse(await this.send(did));
+      if (r.status === 'positive' && r.bytes[0] === 0x62) out[did] = asciiDid(r.bytes) ?? toHex(r.bytes);
+    }
+    return out;
+  }
+
   /** Sonde les DID d'un calculateur ; retourne { did: hex } des réponses positives. */
   async probeDids(header) {
     await this.setHeader(header);
@@ -197,14 +224,16 @@ export class ChargeDiagnostic {
     const bms = await this.readBms().catch(() => null);
 
     const dids = {};
+    const idents = {};
     for (const h of this.report.chargeTargets) {
       onProgress(`Sondage des données du calculateur ${h}…`);
       dids[h] = await this.probeDids(h);
       this.report.supportedDids[h] = Object.keys(dids[h]);
-      this.log('info', `${h} : ${this.report.supportedDids[h].length} DID lisible(s)`);
+      idents[h] = await this.readIdents(h);
+      this.log('info', `${h} : ${this.report.supportedDids[h].length} DID lisible(s), ${Object.keys(idents[h]).length} identifiant(s)`);
     }
     const byEcu = Object.fromEntries(ecus.map((e) => [e.header, e]));
-    this.report.ref = { t: new Date().toISOString(), generic, byEcu, bms, dids };
+    this.report.ref = { t: new Date().toISOString(), generic, byEcu, bms, dids, idents };
     this.onUpdate();
     return this.report.ref;
   }
@@ -217,16 +246,22 @@ export class ChargeDiagnostic {
     return m;
   }
 
-  /** Surveillance continue jusqu'à stopMonitor(). Tolère les « NO DATA » (calculateurs endormis). */
-  async runMonitor({ intervalMs = 400 } = {}) {
+  /**
+   * Surveillance continue jusqu'à stopMonitor(), ou arrêt automatique (afterMarkerMs après le
+   * 1er repère, maxMs au total). Tolère les « NO DATA » (calculateurs endormis).
+   */
+  async runMonitor({ intervalMs = 400, afterMarkerMs = MONITOR_AFTER_MARKER_MS, maxMs = MONITOR_MAX_MS } = {}) {
     if (this.monitoring) return;
     const mon = this.report.monitor;
     mon.startedAt = new Date().toISOString();
     mon.stoppedAt = null;
+    mon.stopReason = null;
     this.monitoring = true;
     this.onUpdate();
+    const t0 = Date.now();
     try {
       while (this.monitoring && this.t.connected) {
+        if (this.monitorRemainingMs({ afterMarkerMs, maxMs, t0 }) <= 0) { mon.stopReason = 'auto'; break; }
         // rawAt : instant de CHAQUE lecture (un cycle dure ~1 s : le dater d'un bloc décalerait
         // les octets par rapport au repère « câble branché »).
         const sample = { t: new Date().toISOString(), bms: null, raw: {}, rawAt: {} };
@@ -248,10 +283,19 @@ export class ChargeDiagnostic {
         await delay(intervalMs);
       }
     } finally {
+      if (!mon.stopReason) mon.stopReason = this.t.connected ? 'manual' : 'disconnected';
       this.monitoring = false;
       mon.stoppedAt = new Date().toISOString();
       this.onUpdate();
     }
+  }
+
+  /** Temps restant avant l'arrêt automatique de la surveillance (ms). */
+  monitorRemainingMs({ afterMarkerMs = MONITOR_AFTER_MARKER_MS, maxMs = MONITOR_MAX_MS, t0 = Date.parse(this.report.monitor.startedAt), now = Date.now() } = {}) {
+    let left = t0 + maxMs - now;
+    const first = this.report.monitor.markers[0];
+    if (first) left = Math.min(left, Date.parse(first.t) + afterMarkerMs - now);
+    return left;
   }
 
   stopMonitor() { this.monitoring = false; }
@@ -276,7 +320,9 @@ export class ChargeDiagnostic {
 export function flattenDtcs(reading) {
   const out = [];
   for (const [header, r] of Object.entries(reading?.byEcu ?? {})) {
-    for (const d of r?.dtcs ?? []) out.push({ header, name: ecuName(header), label: dtcLabel(d), statusText: d.statusText });
+    for (const d of r?.dtcs ?? []) {
+      out.push({ header, name: ecuName(header), label: dtcLabel(d), fullCode: dtcFullCode(d), known: describeDtc(d), statusText: d.statusText });
+    }
   }
   return out;
 }
@@ -326,6 +372,15 @@ export function didChanges(monitor) {
   return changes;
 }
 
+/** Détail d'un constat DTC : définition constructeur connue (bulletin) + statut. */
+function dtcDetail(d, extra) {
+  const parts = [];
+  if (d.known) parts.push(`${d.known.text} — ${d.known.part}. Bulletin Hyundai ${d.known.tsb} : remplacement de l'ICCU.`);
+  if (extra) parts.push(extra);
+  if (d.statusText) parts.push(`Statut : ${d.statusText}.`);
+  return parts.join(' ');
+}
+
 /**
  * Verdict à partir du rapport. Chaque constat : { level: 'ok'|'warn'|'alert'|'info', title, detail }.
  * Les seuils reprennent la grille d'interprétation de docs/14-diagnostic-recharge.md.
@@ -356,8 +411,8 @@ export function computeVerdict(report) {
   const chargeHeaders = new Set(report?.chargeTargets ?? []);
   for (const d of refDtcs) {
     const onCharge = chargeHeaders.has(d.header);
-    items.push({ level: onCharge ? 'alert' : 'info', title: `${d.label} sur ${d.header} (${d.name})`,
-      detail: `${d.statusText}${onCharge ? ' — calculateur de la chaîne de charge.' : ''}` });
+    items.push({ level: onCharge || d.known ? 'alert' : 'info', title: `${d.fullCode} sur ${d.header} (${d.name})`,
+      detail: dtcDetail(d, onCharge ? 'Calculateur de la chaîne de charge.' : '') });
   }
   for (const c of ref?.generic?.confirmed ?? []) items.push({ level: 'info', title: `Code générique ${c}`, detail: 'Lu en mode 03.' });
 
@@ -408,13 +463,19 @@ export function computeVerdict(report) {
     const fresh = newDtcs(ref, report.after);
     if (fresh.length) {
       for (const d of fresh) {
-        items.push({ level: 'alert', title: `Nouveau code ${d.label} sur ${d.header} (${d.name})`,
-          detail: `Apparu pendant la tentative de charge. ${d.statusText}` });
+        items.push({ level: 'alert', title: `Nouveau code ${d.fullCode ?? d.label} sur ${d.header} (${d.name})`,
+          detail: dtcDetail(d, 'Apparu pendant la tentative de charge.') });
       }
     } else {
       items.push({ level: 'info', title: 'Aucun nouveau code défaut après la tentative',
         detail: "Si la charge a échoué quand même, l'arrêt n'est pas journalisé : comparez les octets des DID qui ont changé au branchement." });
     }
+  }
+
+  for (const [h, v] of Object.entries(ref?.idents ?? {})) {
+    if (!Object.keys(v).length) continue;
+    items.push({ level: 'info', title: `Identification ${h} (${ecuName(h)})`,
+      detail: Object.entries(v).map(([did, txt]) => `${IDENT_DIDS[did] ?? did} : ${txt}`).join(' · ') });
   }
 
   if (!report?.ecus?.some((e) => KNOWN_ECUS[e.header]?.charge)) {

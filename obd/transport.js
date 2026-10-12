@@ -142,7 +142,7 @@ export class FakeTransport {
       if (hdr === '7E4') return '7EC 03 59 02 FF';
       if (['7C6', '7A0', '7B3'].includes(hdr)) return `${(parseInt(hdr, 16) + 8).toString(16).toUpperCase()} 03 59 02 FF`;
       if (hdr === '7D1') return '7D9 03 7F 19 11';
-      if (hdr === '7E5') return this._plugged ? '7ED 07 59 02 FF 1A B0 00 09' : '7ED 03 59 02 FF';
+      if (hdr === '7E5') return this._plugged ? '7ED 07 59 02 FF 1E 0C 73 09' : '7ED 03 59 02 FF';
       return 'NO DATA';
     }
     if (hdr === '7E5' && /^22/.test(c)) {

@@ -1,6 +1,7 @@
 // Écran « Diagnostic recharge AC » : pilote ChargeDiagnostic et affiche verdict + détails.
 // Intégré à la console (index.html, carte #diagCard) ; la liaison BLE reste celle de app.js.
 import { ChargeDiagnostic, computeVerdict, didChanges, flattenDtcs, KNOWN_ECUS } from './charge-diag.js';
+import { describeDtc, dtcFullCode } from '../obd/uds.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -26,12 +27,44 @@ export function initDiagUi({ getTransport, log, setBusy, isBlocked = () => false
   function ensureDiag() {
     const t = getTransport();
     if (!t?.connected) throw new Error('Non connecté');
-    if (!diag || diag.t !== t) diag = new ChargeDiagnostic(t, { log, onUpdate: render });
+    if (!diag) diag = new ChargeDiagnostic(t, { log, onUpdate: render });
+    // Reconnexion après une coupure Bluetooth : on GARDE le rapport en cours (étape C possible).
+    else if (diag.t !== t) diag.attach(t);
     return diag;
   }
 
+  // Sauvegarde locale : survit à une coupure Bluetooth, à un rechargement de la page ou à la
+  // fermeture de l'onglet. Pendant la surveillance, on sauvegarde au fil de l'eau (tous les 5 relevés).
+  let savedSamples = 0;
   function save() {
-    try { localStorage.setItem(SAVE_KEY, JSON.stringify(diag.report)); } catch { /* quota / navigation privée */ }
+    if (!diag) return;
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify(diag.report));
+      savedSamples = diag.report.monitor.samples.length;
+    } catch { /* quota / navigation privée */ }
+  }
+  function autosave() {
+    if (diag?.monitoring && diag.report.monitor.samples.length - savedSamples >= 5) save();
+  }
+  function restore() {
+    try {
+      const report = JSON.parse(localStorage.getItem(SAVE_KEY) ?? 'null');
+      if (report?.type !== 'charge-diagnostic' || !report.ref) return;
+      diag = new ChargeDiagnostic(null, { log, onUpdate: render });
+      diag.report = report;
+      progress.textContent = `Rapport du ${new Date(report.startedAt).toLocaleString('fr-FR')} restauré.`;
+    } catch { /* stockage indisponible ou rapport illisible */ }
+  }
+  function clearReport() {
+    if (diag?.monitoring || running) return;
+    if (!confirm('Effacer le rapport de diagnostic de ce téléphone ? (pensez à l\'exporter avant)')) return;
+    try { localStorage.removeItem(SAVE_KEY); } catch { /* ignoré */ }
+    diag = null;
+    progress.textContent = '';
+    ['diagRefSummary', 'diagLive', 'diagAfterSummary'].forEach((id) => { $(id).textContent = ''; });
+    $('diagVerdict').hidden = true;
+    onVisibility();
+    updateButtons();
   }
 
   async function runStep(label, fn) {
@@ -70,12 +103,13 @@ export function initDiagUi({ getTransport, log, setBusy, isBlocked = () => false
     log('info', 'Diagnostic — étape B (surveillance)…');
     try {
       await ensureDiag().runMonitor();
-      progress.textContent = `Surveillance arrêtée (${diag.report.monitor.samples.length} relevés).`;
-      save();
+      const why = { auto: 'arrêt automatique', manual: 'arrêtée', disconnected: 'liaison perdue' }[diag.report.monitor.stopReason] ?? 'arrêtée';
+      progress.textContent = `Surveillance terminée — ${why} (${diag.report.monitor.samples.length} relevés). Reconnectez si besoin puis lancez l'étape C.`;
     } catch (err) {
-      progress.textContent = `Surveillance interrompue — ${err?.message || err}`;
+      progress.textContent = `Surveillance interrompue — ${err?.message || err}. Rapport conservé : reconnectez puis lancez l'étape C.`;
       log('err', `Diagnostic : ${err?.message || err}`);
     } finally {
+      save(); // y compris après une coupure : rien n'est perdu
       running = false;
       setBusy(false);
       updateButtons();
@@ -97,9 +131,10 @@ export function initDiagUi({ getTransport, log, setBusy, isBlocked = () => false
   function updateButtons() {
     const mon = !!diag?.monitoring;
     const hasRef = !!diag?.report.ref;
-    const blocked = isBlocked();
+    const connected = !!getTransport()?.connected;
+    const blocked = isBlocked() || !connected;
     btnA.disabled = running || blocked;
-    btnB.disabled = blocked || !hasRef || (running && !mon);
+    btnB.disabled = (blocked && !mon) || !hasRef || (running && !mon);
     btnB.textContent = mon ? '■ Arrêter la surveillance' : 'B · Surveiller le branchement';
     btnB.classList.toggle('primary', !mon && hasRef && !diag?.report.monitor.samples.length);
     btnC.disabled = running || blocked || !hasRef;
@@ -110,6 +145,7 @@ export function initDiagUi({ getTransport, log, setBusy, isBlocked = () => false
   // --- Rendu ---
   function render() {
     updateButtons();
+    autosave();
     if (!diag) return;
     const r = diag.report;
     const ref = r.ref;
@@ -125,11 +161,13 @@ export function initDiagUi({ getTransport, log, setBusy, isBlocked = () => false
     // Surveillance en direct
     const s = r.monitor.samples;
     const last = s[s.length - 1];
+    const left = diag.monitoring ? Math.max(0, Math.round(diag.monitorRemainingMs() / 1000)) : null;
     $('diagLive').innerHTML = s.length ? esc([
       `${s.length} relevés`,
       `courant ${fmt(last?.bms?.currentA, 'A')}`,
       `12 V ${fmt(last?.bms?.aux12vV, 'V')}`,
       r.monitor.markers.length ? `repères : ${r.monitor.markers.map((m) => m.label).join(', ')}` : 'aucun repère',
+      ...(left != null ? [`arrêt auto dans ${Math.floor(left / 60)} min ${String(left % 60).padStart(2, '0')} s`] : []),
     ].join(' · ')) : '';
 
     $('diagAfterSummary').textContent = r.after ? `Relu à ${new Date(r.after.t).toLocaleTimeString('fr-FR')}` : '';
@@ -145,7 +183,7 @@ export function initDiagUi({ getTransport, log, setBusy, isBlocked = () => false
     $('diagEcus').innerHTML = r.ecus.map((e) => {
       const rd = reading?.byEcu?.[e.header] ?? e;
       const codes = rd.status === 'ok'
-        ? (rd.dtcs.length ? rd.dtcs.map((d) => `${d.code}-${d.ftb} (${d.statusText})`).join(', ') : 'aucun code')
+        ? (rd.dtcs.length ? rd.dtcs.map((d) => `${dtcFullCode(d)} (${d.statusText})${describeDtc(d) ? ` — ${describeDtc(d).text}` : ''}`).join(', ') : 'aucun code')
         : (rd.nrcText ?? rd.status);
       const known = KNOWN_ECUS[e.header];
       return `<tr><td>${esc(e.header)}</td><td>${esc(e.name)}${known && !known.confirmed ? ' <span class="sub">(à confirmer)</span>' : ''}</td><td>${esc(codes)}</td></tr>`;
@@ -203,12 +241,20 @@ export function initDiagUi({ getTransport, log, setBusy, isBlocked = () => false
   $('diagDownload').addEventListener('click', download);
   $('diagShare').addEventListener('click', share);
   $('diagCopy').addEventListener('click', copySummary);
+  $('diagClear').addEventListener('click', clearReport);
 
+  // La carte reste visible hors connexion dès qu'un rapport existe (consultation / export).
+  function onVisibility() {
+    $('diagCard').hidden = !getTransport()?.connected && !diag?.report.ref;
+  }
+
+  restore();
   updateButtons();
+  render();
   return {
-    /** Liaison perdue : la surveillance s'arrête d'elle-même ; on garde le rapport. */
-    onDisconnect() { diag?.stopMonitor(); updateButtons(); },
+    /** Liaison perdue : la surveillance s'arrête d'elle-même ; on garde et on sauvegarde le rapport. */
+    onDisconnect() { diag?.stopMonitor(); save(); updateButtons(); },
     get busy() { return running; },
-    refresh: updateButtons,
+    refresh() { updateButtons(); onVisibility(); },
   };
 }

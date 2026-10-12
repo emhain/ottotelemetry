@@ -86,14 +86,17 @@ test('parcours complet A → B → C sur transport simulé', async () => {
 
   await diag.stepAfter();
   const fresh = newDtcs(diag.report.ref, diag.report.after);
-  assert.deepEqual(fresh.map((d) => `${d.header}:${d.label}`), ['7E5:P1AB0-00']);
+  assert.deepEqual(fresh.map((d) => `${d.header}:${d.fullCode}`), ['7E5:P1E0C73']);
 
   const ch = didChanges(diag.report.monitor);
   assert.ok(ch.some((c) => c.key === '7E5:22B001' && c.index === 3 && c.before === 0 && c.after === 0x35));
 
   const v = computeVerdict(diag.report);
   assert.equal(v.level, 'alert');
-  assert.ok(v.items.some((i) => i.title.startsWith('Nouveau code P1AB0-00 sur 7E5')));
+  const item = v.items.find((i) => i.title.startsWith('Nouveau code P1E0C73 sur 7E5'));
+  assert.ok(item);
+  assert.match(item.detail, /Input Relay Stuck Closed Check.*26-EV-004H/);
+  assert.equal(diag.report.monitor.stopReason, 'manual');
 
   // Invariant : aucune commande hors liste blanche n'a été émise.
   assert.deepEqual(sent.filter((c) => !isReadOnlyCommand(c)), []);
@@ -130,4 +133,37 @@ test('verdict : 12 V faible → alerte ICCU ; charge démarrée → ok', () => {
   const ready = computeVerdict({ ...base, monitor: { samples: mk([-30, -30, -30, -30], [14.2, 14.2, 14.2, 14.2]), markers } });
   assert.ok(ready.items.some((i) => i.title === 'Courant déjà négatif avant le branchement'));
   assert.ok(ready.items.some((i) => i.title.startsWith('12 V déjà maintenue')));
+});
+
+test('dictionnaire : codes du bulletin ICCU relevés sur la voiture', async () => {
+  const { describeDtc, dtcFullCode, asciiDid } = await import('../obd/uds.js');
+  // Trame réelle du 12/10/2026 (7E5) : P1E011C + P1E0C73.
+  const r = parseUdsResponse('7ED 10 0B 59 02 FF 1E 01 1C\n7ED 21 2C 1E 0C 73 28 AA AA');
+  const d = decodeUdsDtcs(r.bytes);
+  assert.deepEqual(d.map(dtcFullCode), ['P1E011C', 'P1E0C73']);
+  assert.match(describeDtc(d[0]).text, /PFC Voltage Sensor/);
+  assert.equal(describeDtc({ code: 'P0123', ftb: '00' }), null);
+  assert.equal(asciiDid([0x62, 0xf1, 0x89, 0x31, 0x2e, 0x30, 0x32]), '1.02');
+});
+
+test('réponse 19 02 tronquée (« 7CE 01 59 ») = partielle, pas « aucun code »', async () => {
+  const t = new FakeTransport(); await t.connect();
+  t.sendCommand = async (c) => (c === '1902FF' ? '7CE 01 59' : 'OK');
+  const r = await new ChargeDiagnostic(t).readUdsDtcs('7C6');
+  assert.equal(r.status, 'partial');
+});
+
+test('reconnexion : attach() garde le rapport ; arrêt automatique après le repère', async () => {
+  const t1 = new FakeTransport(); await t1.connect();
+  const diag = new ChargeDiagnostic(t1);
+  diag.report.ref = { byEcu: {} };
+  diag.report.monitor.markers.push({ t: new Date(Date.now() - 1000).toISOString(), label: 'Câble branché' });
+  await diag.runMonitor({ intervalMs: 0, afterMarkerMs: 500 });
+  assert.equal(diag.report.monitor.stopReason, 'auto');
+
+  const t2 = new FakeTransport(); await t2.connect();
+  diag.attach(t2);
+  assert.equal(diag.t, t2);
+  assert.ok(diag.report.ref);
+  assert.equal(diag.report.monitor.markers.length, 1);
 });

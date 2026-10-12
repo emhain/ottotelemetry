@@ -108,3 +108,29 @@ export function decodeUdsDtcs(bytes) {
 
 /** Libellé lisible d'un DTC (« P1AA6-00 »). */
 export const dtcLabel = (d) => `${d.code}-${d.ftb}`;
+
+/** Code complet au format Hyundai GDS (« P1E011C » = code + type de défaut). */
+export const dtcFullCode = (d) => `${d.code}${d.ftb}`;
+
+// Codes constructeur connus. Source : bulletin Hyundai TSB 26-EV-004H (mai 2026, « DTC
+// verification – ICCU replacement, warranty extension Z14 ») — tous imposent le remplacement
+// de l'ICCU. P1E011C et P1E0C73 relevés sur la voiture le 12/10/2026 (calculateur 7E5).
+export const KNOWN_DTCS = {
+  P1A9096: { text: 'DC/DC Converter Input Voltage Sensor Fault', part: 'ICCU (convertisseur 12 V)', tsb: '26-EV-004H' },
+  P1E011C: { text: 'PFC Voltage Sensor Reliability and Initial Offset Value Check', part: 'ICCU (chargeur AC)', tsb: '26-EV-004H' },
+  P1E0211: { text: 'PFC Voltage Sensor Circuit Low', part: 'ICCU (chargeur AC)', tsb: '26-EV-004H' },
+  P1E1300: { text: 'Inverter Charging Relay Fault', part: 'ICCU (chargeur AC)', tsb: '26-EV-004H' },
+  P1E1417: { text: 'PFC Output Voltage Too High', part: 'ICCU (chargeur AC)', tsb: '26-EV-004H' },
+  P1E0C73: { text: 'Input Relay Stuck Closed Check', part: 'ICCU (chargeur AC)', tsb: '26-EV-004H' },
+  P0D5C00: { text: 'Battery Charger Hybrid/EV Battery Output Power Performance', part: 'ICCU (chargeur AC)', tsb: '26-EV-004H' },
+};
+
+/** Fiche connue d'un DTC (par code complet), ou null. */
+export const describeDtc = (d) => KNOWN_DTCS[dtcFullCode(d)] ?? null;
+
+/** Lecture ASCII d'un identifiant (réponse 62 Fx xx …) : n° de pièce, version logicielle… */
+export function asciiDid(bytes) {
+  if (!bytes || bytes[0] !== 0x62 || bytes.length < 4) return null;
+  const txt = String.fromCharCode(...bytes.slice(3).filter((b) => b >= 0x20 && b < 0x7f)).trim();
+  return txt.length >= 2 ? txt : null;
+}

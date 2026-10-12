@@ -6,7 +6,7 @@ import { reassembleIsoTp, decode0101, decode0105, decode0100, decodeOdometer, de
 import { buildSample, buildReplayJsonl } from './replay.js';
 import { initDiagUi } from './diag/ui.js';
 
-const BUILD = 'v22';
+const BUILD = 'v23';
 const REC_INTERVAL_MS = 700; // pause entre deux interrogations pendant l'enregistrement
 const ODO_EVERY = 20; // interroge odomètre + pneus 1 cycle sur 20 (changent lentement)
 
@@ -138,7 +138,6 @@ function setStatus(state, text) {
 function setConnectedUI(connected) {
   cmdCard.hidden = !connected;
   recCard.hidden = !connected;
-  $('diagCard').hidden = !connected;
   diagUi.refresh();
   btnDisconnect.hidden = !connected;
   btnConnect.disabled = connected;
